@@ -1,4 +1,6 @@
 import $ from 'jquery'
+import '../app'
+import { escapeHtml } from './utils'
 
 // This file adds event handlers responsible for the 'Try it out' UI in the
 // Etherscan-compatible API documentation page.
@@ -43,12 +45,12 @@ function handleSuccess (query, xhr, clickedButton) {
   const requestUrl = $(`[data-selector="${module}-${action}-request-url"]`)[0]
   const code = $(`[data-selector="${module}-${action}-server-response-code"]`)[0]
   const body = $(`[data-selector="${module}-${action}-server-response-body"]`)[0]
-  const url = composeRequestUrl(query)
+  const url = composeRequestUrl(escapeHtml(query))
 
   curl.innerHTML = composeCurlCommand(url)
   requestUrl.innerHTML = url
   code.innerHTML = xhr.status
-  body.innerHTML = JSON.stringify(xhr.responseJSON, undefined, 2)
+  body.innerHTML = escapeHtml(JSON.stringify(xhr.responseJSON, undefined, 2))
   $(`[data-selector="${module}-${action}-try-api-ui-result"]`).show()
   $(`[data-selector="${module}-${action}-btn-try-api-clear"]`).show()
   clickedButton.html(clickedButton.data('original-text'))
@@ -91,6 +93,7 @@ $('button[data-selector*="btn-try-api-clear"]').click(event => {
 
 // Remove invalid class from required fields if not empty
 $('input[data-selector*="try-api-ui"][data-required="true"]').on('keyup', (event) => {
+  // @ts-ignore
   if (event.target.value !== '') {
     event.target.classList.remove('is-invalid')
   } else {
@@ -114,7 +117,7 @@ $('button[data-try-api-ui-button-type="execute"]').click(event => {
   const action = clickedButton.attr('data-action')
   const inputs = $(`input[data-selector="${module}-${action}-try-api-ui"]`)
   const query = composeQuery(module, action, inputs)
-  const loadingText = '<i class="fa fa-spinner fa-spin"></i> loading...'
+  const loadingText = '<span class="loading-spinner-small mr-2"><span class="loading-spinner-block-1"></span><span class="loading-spinner-block-2"></span></span> Loading...'
 
   clickedButton.prop('disabled', true)
   clickedButton.data('original-text', clickedButton.html())
@@ -124,7 +127,7 @@ $('button[data-try-api-ui-button-type="execute"]').click(event => {
   }
 
   $.ajax({
-    url: `/api${query}`,
+    url: composeRequestUrl(query),
     success: (_data, _status, xhr) => {
       handleSuccess(query, xhr, clickedButton)
     },

@@ -1,12 +1,13 @@
 defmodule BlockScoutWeb.Endpoint do
   use Phoenix.Endpoint, otp_app: :block_scout_web
+  use Absinthe.Phoenix.Endpoint
 
-  if Application.get_env(:block_scout_web, :sql_sandbox) do
+  if Application.compile_env(:block_scout_web, :sql_sandbox) do
     plug(Phoenix.Ecto.SQL.Sandbox, repo: Explorer.Repo)
   end
 
-  socket("/socket", BlockScoutWeb.UserSocket)
-  socket("/wobserver", Wobserver.Web.PhoenixSocket)
+  socket("/socket", BlockScoutWeb.UserSocket, websocket: [timeout: 45_000])
+  socket("/socket/v2", BlockScoutWeb.UserSocketV2, websocket: [timeout: 45_000])
 
   # Serve at "/" the static files from "priv/static" directory.
   #
@@ -26,14 +27,11 @@ defmodule BlockScoutWeb.Endpoint do
       android-chrome-512x512.png
       apple-touch-icon.png
       browserconfig.xml
-      favicon.ico
-      favicon-16x16.png
-      favicon-32x32.png
       mstile-150x150.png
       safari-pinned-tab.svg
-      site.manifest
       robots.txt
-    )
+    ),
+    only_matching: ~w(manifest)
   )
 
   # Code reloading can be explicitly enabled under the
@@ -45,11 +43,12 @@ defmodule BlockScoutWeb.Endpoint do
   end
 
   plug(Plug.RequestId)
-  plug(Plug.Logger)
 
   plug(
     Plug.Parsers,
     parsers: [:urlencoded, :multipart, :json],
+    length: 20_000_000,
+    query_string_length: 1_000_000,
     pass: ["*/*"],
     json_decoder: Poison
   )
@@ -60,14 +59,23 @@ defmodule BlockScoutWeb.Endpoint do
   # The session will be stored in the cookie and signed,
   # this means its contents can be read but not tampered with.
   # Set :encryption_salt if you would also like to encrypt it.
+
   plug(
     Plug.Session,
-    store: :cookie,
+    store: BlockScoutWeb.Plug.RedisCookie,
     key: "_explorer_key",
-    signing_salt: "iC2ksJHS"
+    signing_salt: "iC2ksJHS",
+    same_site: "Lax",
+    http_only: false,
+    domain: Application.compile_env(:block_scout_web, :cookie_domain)
   )
 
+  use SpandexPhoenix
+
   plug(BlockScoutWeb.Prometheus.Exporter)
+
+  # 'x-apollo-tracing' header for https://www.graphqlbin.com to work with our GraphQL endpoint
+  plug(CORSPlug, headers: ["x-apollo-tracing" | CORSPlug.defaults()[:headers]])
 
   plug(BlockScoutWeb.Router)
 

@@ -9,7 +9,6 @@ import '../css/app.scss'
 //
 // Import dependencies
 //
-import '@babel/polyfill'
 import 'phoenix_html'
 import 'bootstrap'
 
@@ -20,23 +19,24 @@ import 'bootstrap'
 
 import './locale'
 
+import './pages/layout'
+import './pages/dark-mode-switcher'
+
 import './lib/clipboard_buttons'
 import './lib/currency'
 import './lib/from_now'
+import './lib/indexing'
 import './lib/loading_element'
-import './lib/market_history_chart'
-import './lib/reload_button'
-import './lib/tooltip'
-import './lib/smart_contract/read_only_functions'
-import './lib/smart_contract/wei_ether_converter'
+import './lib/pending_transactions_toggle'
 import './lib/pretty_json'
-import './lib/try_api'
-import './lib/token_balance_dropdown'
-import './lib/token_balance_dropdown_search'
-import './lib/token_transfers_toggle'
+import './lib/reload_button'
 import './lib/stop_propagation'
+import './lib/tooltip'
+import './lib/modals'
+import './lib/card_tabs'
+import './lib/ad'
+import './lib/dark_mode'
 
-import './pages/address'
-import './pages/block'
-import './pages/chain'
-import './pages/transaction'
+import swal from 'sweetalert2'
+// @ts-ignore
+window.Swal = swal

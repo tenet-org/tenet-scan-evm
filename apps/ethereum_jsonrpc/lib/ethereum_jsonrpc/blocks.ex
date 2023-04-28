@@ -4,11 +4,59 @@ defmodule EthereumJSONRPC.Blocks do
   and [`eth_getBlockByNumber`](https://github.com/ethereum/wiki/wiki/JSON-RPC#eth_getblockbynumber) from batch requests.
   """
 
-  alias EthereumJSONRPC.{Block, Transactions, Uncles}
+  alias EthereumJSONRPC.{Block, Transactions, Transport, Uncles}
 
   @type elixir :: [Block.elixir()]
   @type params :: [Block.params()]
-  @type t :: [Block.t()]
+  @type t :: %__MODULE__{
+          blocks_params: [map()],
+          block_second_degree_relations_params: [map()],
+          transactions_params: [map()],
+          errors: [Transport.error()]
+        }
+
+  defstruct blocks_params: [],
+            block_second_degree_relations_params: [],
+            transactions_params: [],
+            errors: []
+
+  def requests(id_to_params, request) when is_map(id_to_params) and is_function(request, 1) do
+    Enum.map(id_to_params, fn {id, params} ->
+      params
+      |> Map.put(:id, id)
+      |> request.()
+    end)
+  end
+
+  @spec from_responses(list(), map()) :: t()
+  def from_responses(responses, id_to_params) when is_list(responses) and is_map(id_to_params) do
+    %{errors: errors, blocks: blocks} =
+      responses
+      |> Enum.map(&Block.from_response(&1, id_to_params))
+      |> Enum.reduce(%{errors: [], blocks: []}, fn
+        {:ok, block}, %{blocks: blocks} = acc ->
+          %{acc | blocks: [block | blocks]}
+
+        {:error, error}, %{errors: errors} = acc ->
+          %{acc | errors: [error | errors]}
+      end)
+
+    elixir_blocks = to_elixir(blocks)
+
+    elixir_uncles = elixir_to_uncles(elixir_blocks)
+    elixir_transactions = elixir_to_transactions(elixir_blocks)
+
+    block_second_degree_relations_params = Uncles.elixir_to_params(elixir_uncles)
+    transactions_params = Transactions.elixir_to_params(elixir_transactions)
+    blocks_params = elixir_to_params(elixir_blocks)
+
+    %__MODULE__{
+      errors: errors,
+      blocks_params: blocks_params,
+      block_second_degree_relations_params: block_second_degree_relations_params,
+      transactions_params: transactions_params
+    }
+  end
 
   @doc """
   Converts `t:elixir/0` elements to params used by `Explorer.Chain.Block.changeset/2`.
@@ -45,16 +93,23 @@ defmodule EthereumJSONRPC.Blocks do
       [
         %{
           difficulty: 131072,
+          extra_data: "0x",
           gas_limit: 6700000,
           gas_used: 0,
           hash: "0x5b28c1bfd3a15230c9a46b399cd0f9a6920d432e85381cc6a140b06e8410112f",
+          logs_bloom: "0x00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
           miner_hash: "0x0000000000000000000000000000000000000000",
+          mix_hash: "0x0",
           nonce: 0,
           number: 0,
           parent_hash: "0x0000000000000000000000000000000000000000000000000000000000000000",
+          receipts_root: "0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421",
+          sha3_uncles: "0x1dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d49347",
           size: 533,
+          state_root: "0xfad4af258fd11939fae0c6c6eec9d340b1caac0b0196fd9a1bc3f489c5bf00b3",
           timestamp: Timex.parse!("1970-01-01T00:00:00Z", "{ISO:Extended:Z}"),
           total_difficulty: 131072,
+          transactions_root: "0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421",
           uncles: ["0xe670ec64341771606e55d6b4ca35a1a6b75ee3d5145a99d05921026d15273311"]
         }
       ]
@@ -205,7 +260,8 @@ defmodule EthereumJSONRPC.Blocks do
       [
         %{
           "hash" => "0xe670ec64341771606e55d6b4ca35a1a6b75ee3d5145a99d05921026d15273311",
-          "nephewHash" => "0xe52d77084cab13a4e724162bcd8c6028e5ecfaa04d091ee476e96b9958ed6b47"
+          "nephewHash" => "0xe52d77084cab13a4e724162bcd8c6028e5ecfaa04d091ee476e96b9958ed6b47",
+          "index" => 0
         }
       ]
 
@@ -275,7 +331,7 @@ defmodule EthereumJSONRPC.Blocks do
         }
       ]
   """
-  @spec to_elixir(t) :: elixir
+  @spec to_elixir([Block.t()]) :: elixir
   def to_elixir(blocks) when is_list(blocks) do
     Enum.map(blocks, &Block.to_elixir/1)
   end

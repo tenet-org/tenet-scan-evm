@@ -24,28 +24,32 @@ defmodule Explorer.Chain.Wei do
 
   defstruct ~w(value)a
 
-  @behaviour Ecto.Type
+  use Ecto.Type
 
   @impl Ecto.Type
   def type, do: :decimal
 
   @impl Ecto.Type
   def cast("0x" <> hex_wei) do
-    with {int_wei, ""} <- Integer.parse(hex_wei, 16) do
-      decimal = Decimal.new(int_wei)
-      {:ok, %__MODULE__{value: decimal}}
-    else
-      _ -> :error
+    case Integer.parse(hex_wei, 16) do
+      {int_wei, ""} ->
+        decimal = Decimal.new(int_wei)
+        {:ok, %__MODULE__{value: decimal}}
+
+      _ ->
+        :error
     end
   end
 
   @impl Ecto.Type
   def cast(string_wei) when is_binary(string_wei) do
-    with {int_wei, ""} <- Integer.parse(string_wei) do
-      decimal = Decimal.new(int_wei)
-      {:ok, %__MODULE__{value: decimal}}
-    else
-      _ -> :error
+    case Integer.parse(string_wei) do
+      {int_wei, ""} ->
+        decimal = Decimal.new(int_wei)
+        {:ok, %__MODULE__{value: decimal}}
+
+      _ ->
+        :error
     end
   end
 
@@ -113,6 +117,17 @@ defmodule Explorer.Chain.Wei do
   @wei_per_ether Decimal.new(1_000_000_000_000_000_000)
   @wei_per_gwei Decimal.new(1_000_000_000)
 
+  @spec hex_format(Wei.t()) :: String.t()
+  def hex_format(%Wei{value: decimal}) do
+    hex =
+      decimal
+      |> Decimal.to_integer()
+      |> Integer.to_string(16)
+      |> String.downcase()
+
+    "0x" <> hex
+  end
+
   @doc """
   Sums two Wei values.
 
@@ -127,6 +142,44 @@ defmodule Explorer.Chain.Wei do
   def sum(%Wei{value: wei_1}, %Wei{value: wei_2}) do
     wei_1
     |> Decimal.add(wei_2)
+    |> from(:wei)
+  end
+
+  @doc """
+  Subtracts two Wei values.
+
+  ## Example
+
+      iex> first = %Explorer.Chain.Wei{value: Decimal.new(1_123)}
+      iex> second = %Explorer.Chain.Wei{value: Decimal.new(1_000)}
+      iex> Explorer.Chain.Wei.sub(first, second)
+      %Explorer.Chain.Wei{value: Decimal.new(123)}
+  """
+  def sub(%Wei{value: wei_1}, %Wei{value: wei_2}) do
+    wei_1
+    |> Decimal.sub(wei_2)
+    |> from(:wei)
+  end
+
+  @doc """
+  Multiplies Wei values by an `t:integer/0`.
+
+  ## Example
+
+      iex> wei = %Explorer.Chain.Wei{value: Decimal.new(10)}
+      iex> multiplier = 5
+      iex> Explorer.Chain.Wei.mult(wei, multiplier)
+      %Explorer.Chain.Wei{value: Decimal.new(50)}
+  """
+  def mult(%Wei{value: value}, multiplier) when is_integer(multiplier) do
+    value
+    |> Decimal.mult(multiplier)
+    |> from(:wei)
+  end
+
+  def mult(%Wei{value: value}, %Decimal{} = multiplier) do
+    value
+    |> Decimal.mult(multiplier)
     |> from(:wei)
   end
 
@@ -211,5 +264,12 @@ end
 defimpl Inspect, for: Explorer.Chain.Wei do
   def inspect(wei, _) do
     "#Explorer.Chain.Wei<#{Decimal.to_string(wei.value)}>"
+  end
+end
+
+defimpl Jason.Encoder, for: Explorer.Chain.Wei do
+  def encode(wei, opts) do
+    # changed since it's needed to return wei value (which is big number) as string
+    Jason.Encode.struct(wei.value, opts)
   end
 end

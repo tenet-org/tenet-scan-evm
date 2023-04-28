@@ -4,21 +4,51 @@ defmodule Indexer.Block.Realtime.Fetcher do
   """
 
   use GenServer
+  use Spandex.Decorators
 
+  require Indexer.Tracer
   require Logger
 
   import EthereumJSONRPC, only: [integer_to_quantity: 1, quantity_to_integer: 1]
-  import Indexer.Block.Fetcher, only: [async_import_tokens: 1, async_import_uncles: 1, fetch_and_import_range: 2]
 
-  alias EthereumJSONRPC.Subscription
+  import Indexer.Block.Fetcher,
+    only: [
+      async_import_block_rewards: 1,
+      async_import_created_contract_codes: 1,
+      async_import_internal_transactions: 1,
+      async_import_replaced_transactions: 1,
+      async_import_tokens: 1,
+      async_import_token_balances: 1,
+      async_import_token_instances: 1,
+      async_import_uncles: 1,
+      fetch_and_import_range: 2
+    ]
+
+  alias Ecto.Changeset
+  alias EthereumJSONRPC.{FetchedBalances, Subscription}
   alias Explorer.Chain
-  alias Indexer.{AddressExtraction, Block, TokenBalances}
+  alias Explorer.Chain.Cache.Accounts
+  alias Explorer.Chain.Events.Publisher
+  alias Explorer.Counters.AverageBlockTime
+  alias Indexer.{Block, Tracer}
   alias Indexer.Block.Realtime.TaskSupervisor
+  alias Indexer.Fetcher.CoinBalance
+  alias Indexer.Prometheus
+  alias Indexer.Transform.Addresses
+  alias Timex.Duration
 
   @behaviour Block.Fetcher
 
+  @minimum_safe_polling_period :timer.seconds(1)
+
+  @shutdown_after :timer.minutes(1)
+
   @enforce_keys ~w(block_fetcher)a
-  defstruct ~w(block_fetcher subscription previous_number)a
+
+  defstruct block_fetcher: nil,
+            subscription: nil,
+            previous_number: nil,
+            timer: nil
 
   @type t :: %__MODULE__{
           block_fetcher: %Block.Fetcher{
@@ -29,7 +59,8 @@ defmodule Indexer.Block.Realtime.Fetcher do
             receipts_concurrency: pos_integer()
           },
           subscription: Subscription.t(),
-          previous_number: pos_integer() | nil
+          previous_number: pos_integer() | nil,
+          timer: reference()
         }
 
   def start_link([arguments, gen_server_options]) do
@@ -37,19 +68,17 @@ defmodule Indexer.Block.Realtime.Fetcher do
   end
 
   @impl GenServer
-  def init(%{block_fetcher: %Block.Fetcher{} = block_fetcher, subscribe_named_arguments: subscribe_named_arguments})
-      when is_list(subscribe_named_arguments) do
+  def init(%{block_fetcher: %Block.Fetcher{} = block_fetcher, subscribe_named_arguments: subscribe_named_arguments}) do
+    Logger.metadata(fetcher: :block_realtime)
+
     {:ok, %__MODULE__{block_fetcher: %Block.Fetcher{block_fetcher | broadcast: :realtime, callback_module: __MODULE__}},
      {:continue, {:init, subscribe_named_arguments}}}
   end
 
   @impl GenServer
-  def handle_continue({:init, subscribe_named_arguments}, %__MODULE__{subscription: nil} = state)
-      when is_list(subscribe_named_arguments) do
-    case EthereumJSONRPC.subscribe("newHeads", subscribe_named_arguments) do
-      {:ok, subscription} -> {:noreply, %__MODULE__{state | subscription: subscription}}
-      {:error, reason} -> {:stop, reason, state}
-    end
+  def handle_continue({:init, subscribe_named_arguments}, %__MODULE__{subscription: nil} = state) do
+    timer = schedule_polling()
+    {:noreply, %__MODULE__{state | timer: timer} |> subscribe_to_new_heads(subscribe_named_arguments)}
   end
 
   @impl GenServer
@@ -58,94 +87,229 @@ defmodule Indexer.Block.Realtime.Fetcher do
         %__MODULE__{
           block_fetcher: %Block.Fetcher{} = block_fetcher,
           subscription: %Subscription{} = subscription,
-          previous_number: previous_number
+          previous_number: previous_number,
+          timer: timer
         } = state
       )
       when is_binary(quantity) do
     number = quantity_to_integer(quantity)
 
+    if number > 0 do
+      Publisher.broadcast([{:last_block_number, number}], :realtime)
+    end
+
     # Subscriptions don't support getting all the blocks and transactions data,
     # so we need to go back and get the full block
     start_fetch_and_import(number, block_fetcher, previous_number)
 
-    {:noreply, %{state | previous_number: number}}
+    Process.cancel_timer(timer)
+    new_timer = schedule_polling()
+
+    {:noreply,
+     %{
+       state
+       | previous_number: number,
+         timer: new_timer
+     }}
   end
 
-  @import_options ~w(address_hash_to_fetched_balance_block_number transaction_hash_to_block_number)a
+  @impl GenServer
+  def handle_info(
+        :poll_latest_block_number,
+        %__MODULE__{
+          block_fetcher: %Block.Fetcher{json_rpc_named_arguments: json_rpc_named_arguments} = block_fetcher,
+          previous_number: previous_number
+        } = state
+      ) do
+    new_previous_number =
+      case EthereumJSONRPC.fetch_block_number_by_tag("latest", json_rpc_named_arguments) do
+        {:ok, number} when is_nil(previous_number) or number != previous_number ->
+          start_fetch_and_import(number, block_fetcher, previous_number)
+
+          number
+
+        _ ->
+          previous_number
+      end
+
+    timer = schedule_polling()
+
+    {:noreply,
+     %{
+       state
+       | previous_number: new_previous_number,
+         timer: timer
+     }}
+  end
+
+  # don't handle other messages (e.g. :ssl_closed)
+  def handle_info(_, state) do
+    {:noreply, state}
+  end
+
+  defp subscribe_to_new_heads(%__MODULE__{subscription: nil} = state, subscribe_named_arguments)
+       when is_list(subscribe_named_arguments) do
+    case EthereumJSONRPC.subscribe("newHeads", subscribe_named_arguments) do
+      {:ok, subscription} ->
+        %__MODULE__{state | subscription: subscription}
+
+      {:error, reason} ->
+        Logger.debug(fn -> ["Could not connect to websocket: #{inspect(reason)}. Continuing with polling."] end)
+        state
+    end
+  catch
+    :exit, _reason ->
+      if Map.get(state, :timer) && state.timer do
+        Process.cancel_timer(state.timer)
+      end
+
+      timer = schedule_polling()
+      %{state | timer: timer}
+  end
+
+  defp subscribe_to_new_heads(state, _), do: state
+
+  defp schedule_polling do
+    polling_period =
+      case AverageBlockTime.average_block_time() do
+        {:error, :disabled} -> 2_000
+        block_time -> round(Duration.to_milliseconds(block_time) / 2)
+      end
+
+    safe_polling_period = max(polling_period, @minimum_safe_polling_period)
+
+    Process.send_after(self(), :poll_latest_block_number, safe_polling_period)
+  end
+
+  @import_options ~w(address_hash_to_fetched_balance_block_number)a
 
   @impl Block.Fetcher
   def import(
         block_fetcher,
         %{
           address_coin_balances: %{params: address_coin_balances_params},
+          address_coin_balances_daily: %{params: address_coin_balances_daily_params},
           address_hash_to_fetched_balance_block_number: address_hash_to_block_number,
-          address_token_balances: %{params: address_token_balances_params},
           addresses: %{params: addresses_params},
-          transactions: %{params: transactions_params}
+          block_rewards: block_rewards
         } = options
       ) do
-    with {:ok,
-          %{
-            addresses_params: internal_transactions_addresses_params,
-            internal_transactions_params: internal_transactions_params
-          }} <-
-           internal_transactions(block_fetcher, %{
-             addresses_params: addresses_params,
-             transactions_params: transactions_params
-           }),
-         {:ok, %{addresses_params: balances_addresses_params, balances_params: balances_params}} <-
-           balances(block_fetcher, %{
-             address_hash_to_block_number: address_hash_to_block_number,
-             addresses_params: internal_transactions_addresses_params,
-             balances_params: address_coin_balances_params
-           }),
-         {:ok, address_token_balances} <-
-           TokenBalances.fetch_token_balances_from_blockchain(address_token_balances_params),
+    with {:balances,
+          {:ok,
+           %{
+             addresses_params: balances_addresses_params,
+             balances_params: balances_params,
+             balances_daily_params: balances_daily_params
+           }}} <-
+           {:balances,
+            balances(block_fetcher, %{
+              address_hash_to_block_number: address_hash_to_block_number,
+              addresses_params: addresses_params,
+              balances_params: address_coin_balances_params,
+              balances_daily_params: address_coin_balances_daily_params
+            })},
+         {block_reward_errors, chain_import_block_rewards} = Map.pop(block_rewards, :errors),
          chain_import_options =
            options
            |> Map.drop(@import_options)
            |> put_in([:addresses, :params], balances_addresses_params)
            |> put_in([:blocks, :params, Access.all(), :consensus], true)
+           |> put_in([:block_rewards], chain_import_block_rewards)
            |> put_in([Access.key(:address_coin_balances, %{}), :params], balances_params)
-           |> put_in([Access.key(:address_token_balances), :params], address_token_balances)
-           |> put_in([Access.key(:internal_transactions, %{}), :params], internal_transactions_params),
-         {:ok, imported} = ok <- Chain.import(chain_import_options) do
-      TokenBalances.log_fetching_errors(__MODULE__, address_token_balances)
-      async_import_remaining_block_data(imported)
+           |> put_in([Access.key(:address_coin_balances_daily, %{}), :params], balances_daily_params),
+         {:import, {:ok, imported} = ok} <- {:import, Chain.import(chain_import_options)} do
+      async_import_remaining_block_data(
+        imported,
+        %{block_rewards: %{errors: block_reward_errors}}
+      )
+
+      Accounts.drop(imported[:addresses])
+
       ok
     end
   end
 
-  defp start_fetch_and_import(number, block_fetcher, previous_number) do
-    start_at = if is_integer(previous_number), do: previous_number + 1, else: number
+  def import(_, _) do
+    Logger.warn("Empty parameters were provided for realtime fetcher")
+
+    {:ok, []}
+  end
+
+  def start_fetch_and_import(number, block_fetcher, previous_number) do
+    start_at = determine_start_at(number, previous_number)
+    is_reorg = reorg?(number, previous_number)
 
     for block_number_to_fetch <- start_at..number do
-      args = [block_number_to_fetch, block_fetcher]
-      Task.Supervisor.start_child(TaskSupervisor, __MODULE__, :fetch_and_import_block, args)
+      args = [block_number_to_fetch, block_fetcher, is_reorg]
+      Task.Supervisor.start_child(TaskSupervisor, __MODULE__, :fetch_and_import_block, args, shutdown: @shutdown_after)
     end
   end
 
-  def fetch_and_import_block(block_number_to_fetch, block_fetcher, retry \\ 3) do
-    case fetch_and_import_range(block_fetcher, block_number_to_fetch..block_number_to_fetch) do
-      {:ok, {_inserted, _next}} ->
-        Logger.debug(fn ->
-          ["realtime indexer fetched and imported block ", to_string(block_number_to_fetch)]
-        end)
+  defp determine_start_at(number, nil), do: number
 
-      {:error, {step, reason}} ->
+  defp determine_start_at(number, previous_number) do
+    if reorg?(number, previous_number) do
+      # set start_at to NOT fill in skipped numbers
+      number
+    else
+      # set start_at to fill in skipped numbers, if any
+      previous_number + 1
+    end
+  end
+
+  defp reorg?(number, previous_number) when is_integer(previous_number) and number <= previous_number do
+    true
+  end
+
+  defp reorg?(_, _), do: false
+
+  @reorg_delay 5_000
+
+  @decorate trace(name: "fetch", resource: "Indexer.Block.Realtime.Fetcher.fetch_and_import_block/3", tracer: Tracer)
+  def fetch_and_import_block(block_number_to_fetch, block_fetcher, reorg?, retry \\ 3) do
+    Process.flag(:trap_exit, true)
+
+    Indexer.Logger.metadata(
+      fn ->
+        if reorg? do
+          # give previous fetch attempt (for same block number) a chance to finish
+          # before fetching again, to reduce block consensus mistakes
+          :timer.sleep(@reorg_delay)
+        end
+
+        do_fetch_and_import_block(block_number_to_fetch, block_fetcher, retry)
+      end,
+      fetcher: :block_realtime,
+      block_number: block_number_to_fetch
+    )
+  end
+
+  @decorate span(tracer: Tracer)
+  defp do_fetch_and_import_block(block_number_to_fetch, block_fetcher, retry) do
+    time_before = Timex.now()
+
+    {fetch_duration, result} =
+      :timer.tc(fn -> fetch_and_import_range(block_fetcher, block_number_to_fetch..block_number_to_fetch) end)
+
+    Prometheus.Instrumenter.block_full_process(fetch_duration, __MODULE__)
+
+    case result do
+      {:ok, %{inserted: inserted, errors: []}} ->
+        log_import_timings(inserted, fetch_duration, time_before)
+        Logger.debug("Fetched and imported.")
+
+      {:ok, %{inserted: _, errors: [_ | _] = errors}} ->
         Logger.error(fn ->
           [
-            "realtime indexer failed to fetch ",
-            to_string(step),
-            " for block ",
-            to_string(block_number_to_fetch),
-            ": ",
-            inspect(reason),
+            "failed to fetch block: ",
+            inspect(errors),
             ".  Block will be retried by catchup indexer."
           ]
         end)
 
-      {:error, changesets} when is_list(changesets) ->
+      {:error, {:import = step, [%Changeset{} | _] = changesets}} ->
+        Prometheus.Instrumenter.import_errors()
+
         params = %{
           changesets: changesets,
           block_number_to_fetch: block_number_to_fetch,
@@ -154,44 +318,73 @@ defmodule Indexer.Block.Realtime.Fetcher do
         }
 
         if retry_fetch_and_import_block(params) == :ignore do
-          Logger.error(fn ->
-            [
-              "realtime indexer failed to validate for block ",
-              to_string(block_number_to_fetch),
-              ": ",
-              inspect(changesets),
-              ".  Block will be retried by catchup indexer."
-            ]
-          end)
+          Logger.error(
+            fn ->
+              [
+                "failed to validate for block ",
+                to_string(block_number_to_fetch),
+                ": ",
+                inspect(changesets),
+                ".  Block will be retried by catchup indexer."
+              ]
+            end,
+            step: step
+          )
         end
 
+      {:error, {:import = step, reason}} ->
+        Prometheus.Instrumenter.import_errors()
+        Logger.error(fn -> inspect(reason) end, step: step)
+
+      {:error, {step, reason}} ->
+        Logger.error(
+          fn ->
+            [
+              "failed to fetch: ",
+              inspect(reason),
+              ".  Block will be retried by catchup indexer."
+            ]
+          end,
+          step: step
+        )
+
       {:error, {step, failed_value, _changes_so_far}} ->
-        Logger.error(fn ->
-          [
-            "realtime indexer failed to insert ",
-            to_string(step),
-            " for block ",
-            to_string(block_number_to_fetch),
-            ": ",
-            inspect(failed_value),
-            ".  Block will be retried by catchup indexer."
-          ]
-        end)
+        Logger.error(
+          fn ->
+            [
+              "failed to insert: ",
+              inspect(failed_value),
+              ".  Block will be retried by catchup indexer."
+            ]
+          end,
+          step: step
+        )
     end
   end
+
+  defp log_import_timings(%{blocks: [%{number: number, timestamp: timestamp}]}, fetch_duration, time_before) do
+    node_delay = Timex.diff(time_before, timestamp, :seconds)
+    Prometheus.Instrumenter.node_delay(node_delay)
+
+    Logger.debug("Block #{number} fetching duration: #{fetch_duration / 1_000_000}s. Node delay: #{node_delay}s.",
+      fetcher: :block_import_timings
+    )
+  end
+
+  defp log_import_timings(_inserted, _duration, _time_before), do: nil
 
   defp retry_fetch_and_import_block(%{retry: retry}) when retry < 1, do: :ignore
 
   defp retry_fetch_and_import_block(%{changesets: changesets} = params) do
     if unknown_block_number_error?(changesets) do
-      # Wait half a second to give Parity time to sync.
+      # Wait half a second to give Nethermind time to sync.
       :timer.sleep(500)
 
       number = params.block_number_to_fetch
       fetcher = params.block_fetcher
       updated_retry = params.retry - 1
 
-      fetch_and_import_block(number, fetcher, updated_retry)
+      do_fetch_and_import_block(number, fetcher, updated_retry)
     else
       :ignore
     end
@@ -201,62 +394,58 @@ defmodule Indexer.Block.Realtime.Fetcher do
     Enum.any?(changesets, &(Map.get(&1, :message) == "Unknown block number"))
   end
 
-  defp async_import_remaining_block_data(imported) do
-    async_import_tokens(imported)
-    async_import_uncles(imported)
-  end
-
-  defp internal_transactions(
-         %Block.Fetcher{json_rpc_named_arguments: json_rpc_named_arguments},
-         %{addresses_params: addresses_params, transactions_params: transactions_params}
+  defp async_import_remaining_block_data(
+         imported,
+         %{block_rewards: %{errors: block_reward_errors}}
        ) do
-    case transactions_params
-         |> transactions_params_to_fetch_internal_transactions_params()
-         |> EthereumJSONRPC.fetch_internal_transactions(json_rpc_named_arguments) do
-      {:ok, internal_transactions_params} ->
-        merged_addresses_params =
-          %{internal_transactions: internal_transactions_params}
-          |> AddressExtraction.extract_addresses()
-          |> Kernel.++(addresses_params)
-          |> AddressExtraction.merge_addresses()
-
-        {:ok, %{addresses_params: merged_addresses_params, internal_transactions_params: internal_transactions_params}}
-
-      :ignore ->
-        {:ok, %{addresses_params: addresses_params, internal_transactions_params: []}}
-
-      {:error, _reason} = error ->
-        error
-    end
-  end
-
-  defp transactions_params_to_fetch_internal_transactions_params(transactions_params) do
-    Enum.map(transactions_params, &transaction_params_to_fetch_internal_transaction_params/1)
-  end
-
-  defp transaction_params_to_fetch_internal_transaction_params(%{block_number: block_number, hash: hash})
-       when is_integer(block_number) do
-    %{block_number: block_number, hash_data: to_string(hash)}
+    async_import_block_rewards(block_reward_errors)
+    async_import_created_contract_codes(imported)
+    async_import_internal_transactions(imported)
+    async_import_tokens(imported)
+    async_import_token_balances(imported)
+    async_import_token_instances(imported)
+    async_import_uncles(imported)
+    async_import_replaced_transactions(imported)
   end
 
   defp balances(
          %Block.Fetcher{json_rpc_named_arguments: json_rpc_named_arguments},
          %{addresses_params: addresses_params} = options
        ) do
-    with {:ok, fetched_balances_params} <-
-           options
-           |> fetch_balances_params_list()
-           |> EthereumJSONRPC.fetch_balances(json_rpc_named_arguments) do
-      merged_addresses_params =
-        %{address_coin_balances: fetched_balances_params}
-        |> AddressExtraction.extract_addresses()
-        |> Kernel.++(addresses_params)
-        |> AddressExtraction.merge_addresses()
+    case options
+         |> fetch_balances_params_list()
+         |> EthereumJSONRPC.fetch_balances(json_rpc_named_arguments) do
+      {:ok, %FetchedBalances{params_list: params_list, errors: []}} ->
+        merged_addresses_params =
+          %{address_coin_balances: params_list}
+          |> Addresses.extract_addresses()
+          |> Kernel.++(addresses_params)
+          |> Addresses.merge_addresses()
 
-      value_fetched_at = DateTime.utc_now()
-      importable_balances_params = Enum.map(fetched_balances_params, &Map.put(&1, :value_fetched_at, value_fetched_at))
+        value_fetched_at = DateTime.utc_now()
 
-      {:ok, %{addresses_params: merged_addresses_params, balances_params: importable_balances_params}}
+        importable_balances_params = Enum.map(params_list, &Map.put(&1, :value_fetched_at, value_fetched_at))
+
+        block_timestamp_map = CoinBalance.block_timestamp_map(params_list, json_rpc_named_arguments)
+
+        importable_balances_daily_params =
+          Enum.map(params_list, fn param ->
+            day = Map.get(block_timestamp_map, "#{param.block_number}")
+            (day && Map.put(param, :day, day)) || param
+          end)
+
+        {:ok,
+         %{
+           addresses_params: merged_addresses_params,
+           balances_params: importable_balances_params,
+           balances_daily_params: importable_balances_daily_params
+         }}
+
+      {:error, _} = error ->
+        error
+
+      {:ok, %FetchedBalances{errors: errors}} ->
+        {:error, errors}
     end
   end
 

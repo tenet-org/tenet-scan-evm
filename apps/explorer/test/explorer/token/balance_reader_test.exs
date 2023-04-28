@@ -27,9 +27,17 @@ defmodule Explorer.Token.BalanceReaderTest do
 
       get_balance_from_blockchain()
 
-      result = BalanceReader.get_balance_of(token_contract_address_hash, address_hash, block_number)
+      result =
+        BalanceReader.get_balances_of([
+          %{
+            token_contract_address_hash: token_contract_address_hash,
+            address_hash: address_hash,
+            block_number: block_number,
+            token_type: "ERC-20"
+          }
+        ])
 
-      assert result == {:ok, 1_000_000_000_000_000_000_000_000}
+      assert result == [{:ok, 1_000_000_000_000_000_000_000_000}]
     end
 
     test "returns the error message when there is one", %{address: address, token: token} do
@@ -39,9 +47,17 @@ defmodule Explorer.Token.BalanceReaderTest do
 
       get_balance_from_blockchain_with_error()
 
-      result = BalanceReader.get_balance_of(token_contract_address_hash, address_hash, block_number)
+      result =
+        BalanceReader.get_balances_of([
+          %{
+            token_contract_address_hash: token_contract_address_hash,
+            address_hash: address_hash,
+            block_number: block_number,
+            token_type: "ERC-20"
+          }
+        ])
 
-      assert result == {:error, "(-32015) VM execution error."}
+      assert result == [{:error, "(-32015) VM execution error. (Reverted 0x)"}]
     end
   end
 
@@ -49,11 +65,11 @@ defmodule Explorer.Token.BalanceReaderTest do
     expect(
       EthereumJSONRPC.Mox,
       :json_rpc,
-      fn [%{id: _, method: _, params: _}], _options ->
+      fn [%{id: id, method: "eth_call", params: _}], _options ->
         {:ok,
          [
            %{
-             id: "balanceOf",
+             id: id,
              jsonrpc: "2.0",
              result: "0x00000000000000000000000000000000000000000000d3c21bcecceda1000000"
            }
@@ -66,12 +82,12 @@ defmodule Explorer.Token.BalanceReaderTest do
     expect(
       EthereumJSONRPC.Mox,
       :json_rpc,
-      fn [%{id: _, method: _, params: _}], _options ->
+      fn [%{id: id, method: "eth_call", params: _}], _options ->
         {:ok,
          [
            %{
              error: %{code: -32015, data: "Reverted 0x", message: "VM execution error."},
-             id: "balanceOf",
+             id: id,
              jsonrpc: "2.0"
            }
          ]}

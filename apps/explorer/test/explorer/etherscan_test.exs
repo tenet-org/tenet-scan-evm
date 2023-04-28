@@ -4,7 +4,7 @@ defmodule Explorer.EtherscanTest do
   import Explorer.Factory
 
   alias Explorer.{Etherscan, Chain}
-  alias Explorer.Chain.{Transaction, Wei}
+  alias Explorer.Chain.Transaction
 
   describe "list_transactions/2" do
     test "with empty db" do
@@ -64,7 +64,14 @@ defmodule Explorer.EtherscanTest do
 
       %{created_contract_address_hash: contract_address_hash} =
         :internal_transaction_create
-        |> insert(transaction: transaction, index: 0)
+        |> insert(
+          transaction: transaction,
+          index: 0,
+          block_number: transaction.block_number,
+          block_hash: transaction.block_hash,
+          block_index: 0,
+          transaction_index: transaction.index
+        )
         |> with_contract_creation(contract_address)
 
       [found_transaction] = Etherscan.list_transactions(contract_address_hash)
@@ -117,8 +124,8 @@ defmodule Explorer.EtherscanTest do
 
       [found_transaction] = Etherscan.list_transactions(address.hash)
 
-      {:ok, max_block_number} = Chain.max_block_number()
-      expected_confirmations = max_block_number - transaction.block_number
+      block_height = Chain.block_height()
+      expected_confirmations = block_height - transaction.block_number
 
       assert found_transaction.confirmations == expected_confirmations
     end
@@ -135,7 +142,14 @@ defmodule Explorer.EtherscanTest do
 
       %{created_contract_address_hash: contract_hash} =
         :internal_transaction_create
-        |> insert(transaction: transaction, index: 0)
+        |> insert(
+          transaction: transaction,
+          index: 0,
+          block_number: transaction.block_number,
+          block_hash: transaction.block_hash,
+          block_index: 0,
+          transaction_index: transaction.index
+        )
         |> with_contract_creation(contract_address)
 
       [found_transaction] = Etherscan.list_transactions(address.hash)
@@ -177,7 +191,7 @@ defmodule Explorer.EtherscanTest do
 
       block_numbers_order = Enum.map(found_transactions, & &1.block_number)
 
-      assert block_numbers_order == Enum.sort(block_numbers_order)
+      assert block_numbers_order == Enum.sort(block_numbers_order, &(&1 >= &2))
     end
 
     test "orders transactions by block, in descending order" do
@@ -217,12 +231,12 @@ defmodule Explorer.EtherscanTest do
         |> insert_list(:transaction, from_address: address)
         |> with_block(second_block)
 
-      third_block_transactions =
+      first_block_transactions =
         2
         |> insert_list(:transaction, from_address: address)
         |> with_block(third_block)
 
-      first_block_transactions =
+      third_block_transactions =
         2
         |> insert_list(:transaction, from_address: address)
         |> with_block(first_block)
@@ -344,6 +358,41 @@ defmodule Explorer.EtherscanTest do
       end
     end
 
+    test "with start and end timestamp options" do
+      now = Timex.now()
+      timestamp1 = Timex.shift(now, hours: -1)
+      timestamp2 = Timex.shift(now, hours: -3)
+      timestamp3 = Timex.shift(now, hours: -6)
+      blocks1 = insert_list(2, :block, timestamp: timestamp1)
+      blocks2 = [third_block, fourth_block] = insert_list(2, :block, timestamp: timestamp2)
+      blocks3 = insert_list(2, :block, timestamp: timestamp3)
+      address = insert(:address)
+
+      for block <- Enum.concat([blocks1, blocks2, blocks3]) do
+        2
+        |> insert_list(:transaction, from_address: address)
+        |> with_block(block)
+      end
+
+      start_timestamp = Timex.shift(now, hours: -4)
+      end_timestamp = Timex.shift(now, hours: -2)
+
+      options = %{
+        start_timestamp: start_timestamp,
+        end_timestamp: end_timestamp
+      }
+
+      found_transactions = Etherscan.list_transactions(address.hash, options)
+
+      expected_block_numbers = [third_block.number, fourth_block.number]
+
+      assert length(found_transactions) == 4
+
+      for transaction <- found_transactions do
+        assert transaction.block_number in expected_block_numbers
+      end
+    end
+
     test "with filter_by: 'to' option with one matching transaction" do
       address = insert(:address)
       contract_address = insert(:contract_address)
@@ -414,6 +463,157 @@ defmodule Explorer.EtherscanTest do
     end
   end
 
+  describe "list_pending_transactions/2" do
+    test "with empty db" do
+      address = build(:address)
+
+      assert Etherscan.list_pending_transactions(address.hash) == []
+    end
+
+    test "with from address" do
+      address = insert(:address)
+
+      transaction =
+        :transaction
+        |> insert(from_address: address)
+
+      [found_transaction] = Etherscan.list_pending_transactions(address.hash)
+
+      assert transaction.hash == found_transaction.hash
+    end
+
+    test "with to address" do
+      address = insert(:address)
+
+      transaction =
+        :transaction
+        |> insert(to_address: address)
+
+      [found_transaction] = Etherscan.list_pending_transactions(address.hash)
+
+      assert transaction.hash == found_transaction.hash
+    end
+
+    test "with same to and from address" do
+      address = insert(:address)
+
+      _transaction =
+        :transaction
+        |> insert(from_address: address, to_address: address)
+
+      found_transactions = Etherscan.list_pending_transactions(address.hash)
+
+      assert length(found_transactions) == 1
+    end
+
+    test "with address with 0 transactions" do
+      address1 = insert(:address)
+      address2 = insert(:address)
+
+      :transaction
+      |> insert(from_address: address2)
+
+      assert Etherscan.list_pending_transactions(address1.hash) == []
+    end
+
+    test "with address with multiple transactions" do
+      address1 = insert(:address)
+      address2 = insert(:address)
+
+      3
+      |> insert_list(:transaction, from_address: address1)
+
+      :transaction
+      |> insert(from_address: address2)
+
+      found_transactions = Etherscan.list_pending_transactions(address1.hash)
+
+      assert length(found_transactions) == 3
+
+      for found_transaction <- found_transactions do
+        assert found_transaction.from_address_hash == address1.hash
+      end
+    end
+
+    test "orders transactions by inserted_at, in descending order" do
+      address = insert(:address)
+
+      2
+      |> insert_list(:transaction, from_address: address)
+
+      2
+      |> insert_list(:transaction, from_address: address)
+
+      2
+      |> insert_list(:transaction, from_address: address)
+
+      options = %{order_by_direction: :desc}
+
+      found_transactions = Etherscan.list_pending_transactions(address.hash, options)
+
+      inserted_at_order = Enum.map(found_transactions, & &1.inserted_at)
+
+      assert inserted_at_order ==
+               Enum.sort(inserted_at_order, &(DateTime.compare(&1, &2) == :gt || DateTime.compare(&1, &2) == :eq))
+    end
+
+    test "with page_size and page_number options" do
+      address = insert(:address)
+
+      transactions_1 =
+        2
+        |> insert_list(:transaction, from_address: address)
+
+      transactions_2 =
+        2
+        |> insert_list(:transaction, from_address: address)
+
+      transactions_3 =
+        2
+        |> insert_list(:transaction, from_address: address)
+
+      options = %{page_number: 1, page_size: 2}
+
+      page1_transactions = Etherscan.list_pending_transactions(address.hash, options)
+
+      page1_hashes = Enum.map(page1_transactions, & &1.hash)
+
+      assert length(page1_transactions) == 2
+
+      for transaction <- transactions_3 do
+        assert transaction.hash in page1_hashes
+      end
+
+      options = %{page_number: 2, page_size: 2}
+
+      page2_transactions = Etherscan.list_pending_transactions(address.hash, options)
+
+      page2_hashes = Enum.map(page2_transactions, & &1.hash)
+
+      assert length(page2_transactions) == 2
+
+      for transaction <- transactions_2 do
+        assert transaction.hash in page2_hashes
+      end
+
+      options = %{page_number: 3, page_size: 2}
+
+      page3_transactions = Etherscan.list_pending_transactions(address.hash, options)
+
+      page3_hashes = Enum.map(page3_transactions, & &1.hash)
+
+      assert length(page3_transactions) == 2
+
+      for transaction <- transactions_1 do
+        assert transaction.hash in page3_hashes
+      end
+
+      options = %{page_number: 4, page_size: 2}
+
+      assert Etherscan.list_pending_transactions(address.hash, options) == []
+    end
+  end
+
   describe "list_internal_transactions/1 with transaction hash" do
     test "with empty db" do
       transaction = build(:transaction)
@@ -435,7 +635,15 @@ defmodule Explorer.EtherscanTest do
 
       internal_transaction =
         :internal_transaction_create
-        |> insert(transaction: transaction, index: 0, from_address: address)
+        |> insert(
+          transaction: transaction,
+          index: 0,
+          from_address: address,
+          block_number: transaction.block_number,
+          block_hash: transaction.block_hash,
+          block_index: 0,
+          transaction_index: transaction.index
+        )
         |> with_contract_creation(contract_address)
 
       [found_internal_transaction] = Etherscan.list_internal_transactions(transaction.hash)
@@ -472,12 +680,20 @@ defmodule Explorer.EtherscanTest do
         |> with_block()
 
       for index <- 0..2 do
-        insert(:internal_transaction, transaction: transaction, index: index)
+        insert(:internal_transaction,
+          transaction: transaction,
+          index: index,
+          block_number: transaction.block_number,
+          block_hash: transaction.block_hash,
+          block_index: index,
+          transaction_index: transaction.index
+        )
       end
 
       found_internal_transactions = Etherscan.list_internal_transactions(transaction.hash)
 
-      assert length(found_internal_transactions) == 3
+      # excluding of internal transactions with type=call and index=0
+      assert length(found_internal_transactions) == 2
     end
 
     test "only returns internal transactions that belong to the transaction" do
@@ -491,13 +707,38 @@ defmodule Explorer.EtherscanTest do
         |> insert()
         |> with_block()
 
-      insert(:internal_transaction, transaction: transaction1, index: 0)
-      insert(:internal_transaction, transaction: transaction1, index: 1)
-      insert(:internal_transaction, transaction: transaction2, index: 0, type: :reward)
+      insert(:internal_transaction,
+        transaction: transaction1,
+        index: 0,
+        block_number: transaction1.block_number,
+        block_hash: transaction1.block_hash,
+        block_index: 0,
+        transaction_index: transaction1.index
+      )
+
+      insert(:internal_transaction,
+        transaction: transaction1,
+        index: 1,
+        block_number: transaction1.block_number,
+        block_hash: transaction1.block_hash,
+        block_index: 1,
+        transaction_index: transaction1.index
+      )
+
+      insert(:internal_transaction,
+        transaction: transaction2,
+        index: 0,
+        type: :reward,
+        block_number: transaction2.block_number,
+        block_hash: transaction2.block_hash,
+        block_index: 2,
+        transaction_index: transaction2.index
+      )
 
       internal_transactions1 = Etherscan.list_internal_transactions(transaction1.hash)
 
-      assert length(internal_transactions1) == 2
+      # excluding of internal transactions with type=call and index=0
+      assert length(internal_transactions1) == 1
 
       internal_transactions2 = Etherscan.list_internal_transactions(transaction2.hash)
 
@@ -538,7 +779,15 @@ defmodule Explorer.EtherscanTest do
 
       internal_transaction =
         :internal_transaction_create
-        |> insert(transaction: transaction, index: 0, from_address: address)
+        |> insert(
+          transaction: transaction,
+          index: 0,
+          from_address: address,
+          block_number: transaction.block_number,
+          block_hash: block.hash,
+          block_index: 0,
+          transaction_index: transaction.index
+        )
         |> with_contract_creation(contract_address)
 
       [found_internal_transaction] = Etherscan.list_internal_transactions(address.hash)
@@ -551,7 +800,10 @@ defmodule Explorer.EtherscanTest do
         value: internal_transaction.value,
         created_contract_address_hash: internal_transaction.created_contract_address_hash,
         input: internal_transaction.input,
+        index: internal_transaction.index,
+        transaction_hash: internal_transaction.transaction_hash,
         type: internal_transaction.type,
+        call_type: internal_transaction.call_type,
         gas: internal_transaction.gas,
         gas_used: internal_transaction.gas_used,
         error: internal_transaction.error
@@ -577,11 +829,15 @@ defmodule Explorer.EtherscanTest do
         |> insert()
         |> with_block()
 
-      for index <- 0..2 do
+      for index <- 0..3 do
         internal_transaction_details = %{
           transaction: transaction,
           index: index,
-          from_address: address
+          from_address: address,
+          block_number: transaction.block_number,
+          block_hash: transaction.block_hash,
+          block_index: index,
+          transaction_index: transaction.index
         }
 
         insert(:internal_transaction, internal_transaction_details)
@@ -601,14 +857,50 @@ defmodule Explorer.EtherscanTest do
         |> insert()
         |> with_block()
 
-      insert(:internal_transaction, transaction: transaction, index: 0, created_contract_address: address1)
-      insert(:internal_transaction, transaction: transaction, index: 1, from_address: address1)
-      insert(:internal_transaction, transaction: transaction, index: 2, to_address: address1)
-      insert(:internal_transaction, transaction: transaction, index: 3, from_address: address2)
+      insert(:internal_transaction,
+        transaction: transaction,
+        index: 0,
+        block_number: transaction.block_number,
+        block_hash: transaction.block_hash,
+        block_index: 0,
+        transaction_index: transaction.index,
+        created_contract_address: address1
+      )
+
+      insert(:internal_transaction,
+        transaction: transaction,
+        index: 1,
+        block_number: transaction.block_number,
+        block_hash: transaction.block_hash,
+        block_index: 1,
+        transaction_index: transaction.index,
+        from_address: address1
+      )
+
+      insert(:internal_transaction,
+        transaction: transaction,
+        index: 2,
+        block_number: transaction.block_number,
+        block_hash: transaction.block_hash,
+        block_index: 2,
+        transaction_index: transaction.index,
+        to_address: address1
+      )
+
+      insert(:internal_transaction,
+        transaction: transaction,
+        index: 3,
+        block_number: transaction.block_number,
+        block_hash: transaction.block_hash,
+        block_index: 3,
+        transaction_index: transaction.index,
+        from_address: address2
+      )
 
       internal_transactions1 = Etherscan.list_internal_transactions(address1.hash)
 
-      assert length(internal_transactions1) == 3
+      # excluding of internal transactions with type=call and index=0
+      assert length(internal_transactions1) == 2
 
       internal_transactions2 = Etherscan.list_internal_transactions(address2.hash)
 
@@ -623,11 +915,15 @@ defmodule Explorer.EtherscanTest do
         |> insert()
         |> with_block()
 
-      for index <- 0..2 do
+      for index <- 0..3 do
         internal_transaction_details = %{
           transaction: transaction,
           index: index,
-          from_address: address
+          from_address: address,
+          block_number: transaction.block_number,
+          block_hash: transaction.block_hash,
+          block_index: index,
+          transaction_index: transaction.index
         }
 
         insert(:internal_transaction, internal_transaction_details)
@@ -665,7 +961,11 @@ defmodule Explorer.EtherscanTest do
         internal_transaction_details = %{
           transaction: transaction,
           index: index,
-          from_address: address
+          from_address: address,
+          block_number: transaction.block_number,
+          block_hash: transaction.block_hash,
+          block_index: index,
+          transaction_index: transaction.index
         }
 
         insert(:internal_transaction, internal_transaction_details)
@@ -680,7 +980,8 @@ defmodule Explorer.EtherscanTest do
 
       expected_block_numbers = [second_block.number, third_block.number]
 
-      assert length(found_internal_transactions) == 4
+      # excluding of internal transactions with type=call and index=0
+      assert length(found_internal_transactions) == 2
 
       for internal_transaction <- found_internal_transactions do
         assert internal_transaction.block_number in expected_block_numbers
@@ -713,7 +1014,12 @@ defmodule Explorer.EtherscanTest do
         |> insert()
         |> with_block()
 
-      token_transfer = insert(:token_transfer, transaction: transaction)
+      token_transfer =
+        insert(:token_transfer,
+          transaction: transaction,
+          block: transaction.block,
+          block_number: transaction.block_number
+        )
 
       [found_token_transfer] = Etherscan.list_token_transfers(token_transfer.from_address_hash, nil)
 
@@ -726,7 +1032,12 @@ defmodule Explorer.EtherscanTest do
         |> insert()
         |> with_block()
 
-      token_transfer = insert(:token_transfer, transaction: transaction)
+      token_transfer =
+        insert(:token_transfer,
+          transaction: transaction,
+          block: transaction.block,
+          block_number: transaction.block_number
+        )
 
       [found_token_transfer] = Etherscan.list_token_transfers(token_transfer.to_address_hash, nil)
 
@@ -748,9 +1059,26 @@ defmodule Explorer.EtherscanTest do
         |> insert()
         |> with_block()
 
-      insert(:token_transfer, from_address: address1, transaction: transaction)
-      insert(:token_transfer, from_address: address1, transaction: transaction)
-      insert(:token_transfer, from_address: address2, transaction: transaction)
+      insert(:token_transfer,
+        from_address: address1,
+        transaction: transaction,
+        block: transaction.block,
+        block_number: transaction.block_number
+      )
+
+      insert(:token_transfer,
+        from_address: address1,
+        transaction: transaction,
+        block: transaction.block,
+        block_number: transaction.block_number
+      )
+
+      insert(:token_transfer,
+        from_address: address2,
+        transaction: transaction,
+        block: transaction.block,
+        block_number: transaction.block_number
+      )
 
       found_token_transfers = Etherscan.list_token_transfers(address1.hash, nil)
 
@@ -769,14 +1097,19 @@ defmodule Explorer.EtherscanTest do
         |> insert()
         |> with_block()
 
-      token_transfer = insert(:token_transfer, transaction: transaction)
+      token_transfer =
+        insert(:token_transfer,
+          transaction: transaction,
+          block: transaction.block,
+          block_number: transaction.block_number
+        )
 
       insert(:block)
 
       [found_token_transfer] = Etherscan.list_token_transfers(token_transfer.from_address_hash, nil)
 
-      {:ok, max_block_number} = Chain.max_block_number()
-      expected_confirmations = max_block_number - transaction.block_number
+      block_height = Chain.block_height()
+      expected_confirmations = block_height - transaction.block_number
 
       assert found_token_transfer.confirmations == expected_confirmations
     end
@@ -788,7 +1121,12 @@ defmodule Explorer.EtherscanTest do
         |> insert()
         |> with_block()
 
-      token_transfer = insert(:token_transfer, transaction: transaction)
+      token_transfer =
+        insert(:token_transfer,
+          transaction: transaction,
+          block: transaction.block,
+          block_number: transaction.block_number
+        )
 
       {:ok, token} = Chain.token_from_address_hash(token_transfer.token_contract_address_hash)
 
@@ -837,15 +1175,33 @@ defmodule Explorer.EtherscanTest do
         |> insert()
         |> with_block(first_block)
 
-      insert(:token_transfer, from_address: address, transaction: transaction2)
-      insert(:token_transfer, from_address: address, transaction: transaction1)
-      insert(:token_transfer, from_address: address, transaction: transaction3)
+      insert(:token_transfer,
+        from_address: address,
+        transaction: transaction2,
+        block: transaction2.block,
+        block_number: transaction2.block_number
+      )
+
+      insert(:token_transfer,
+        from_address: address,
+        transaction: transaction1,
+        block: transaction1.block,
+        block_number: transaction1.block_number
+      )
+
+      insert(:token_transfer,
+        from_address: address,
+        transaction: transaction3,
+        block: transaction3.block,
+        block_number: transaction3.block_number
+      )
 
       found_token_transfers = Etherscan.list_token_transfers(address.hash, nil)
 
       block_numbers_order = Enum.map(found_token_transfers, & &1.block_number)
 
-      assert block_numbers_order == Enum.sort(block_numbers_order)
+      assert Enum.count(block_numbers_order) == 3
+      assert block_numbers_order == Enum.sort(block_numbers_order, &(&1 >= &2))
     end
 
     test "orders token transfers by block, in descending order" do
@@ -869,9 +1225,26 @@ defmodule Explorer.EtherscanTest do
         |> insert()
         |> with_block(first_block)
 
-      insert(:token_transfer, from_address: address, transaction: transaction2)
-      insert(:token_transfer, from_address: address, transaction: transaction1)
-      insert(:token_transfer, from_address: address, transaction: transaction3)
+      insert(:token_transfer,
+        from_address: address,
+        transaction: transaction2,
+        block: transaction2.block,
+        block_number: transaction2.block_number
+      )
+
+      insert(:token_transfer,
+        from_address: address,
+        transaction: transaction1,
+        block: transaction1.block,
+        block_number: transaction1.block_number
+      )
+
+      insert(:token_transfer,
+        from_address: address,
+        transaction: transaction3,
+        block: transaction3.block,
+        block_number: transaction3.block_number
+      )
 
       options = %{order_by_direction: :desc}
 
@@ -879,6 +1252,7 @@ defmodule Explorer.EtherscanTest do
 
       block_numbers_order = Enum.map(found_token_transfers, & &1.block_number)
 
+      assert Enum.count(block_numbers_order) == 3
       assert block_numbers_order == Enum.sort(block_numbers_order, &(&1 >= &2))
     end
 
@@ -904,11 +1278,29 @@ defmodule Explorer.EtherscanTest do
         |> insert()
         |> with_block(third_block)
 
-      second_block_token_transfers = insert_list(2, :token_transfer, from_address: address, transaction: transaction2)
+      second_block_token_transfers =
+        insert_list(2, :token_transfer,
+          from_address: address,
+          transaction: transaction2,
+          block: transaction2.block,
+          block_number: transaction2.block_number
+        )
 
-      third_block_token_transfers = insert_list(2, :token_transfer, from_address: address, transaction: transaction3)
+      first_block_token_transfers =
+        insert_list(2, :token_transfer,
+          from_address: address,
+          transaction: transaction3,
+          block: transaction3.block,
+          block_number: transaction3.block_number
+        )
 
-      first_block_token_transfers = insert_list(2, :token_transfer, from_address: address, transaction: transaction1)
+      third_block_token_transfers =
+        insert_list(2, :token_transfer,
+          from_address: address,
+          transaction: transaction1,
+          block: transaction1.block,
+          block_number: transaction1.block_number
+        )
 
       options1 = %{page_number: 1, page_size: 2}
 
@@ -961,7 +1353,12 @@ defmodule Explorer.EtherscanTest do
           |> insert()
           |> with_block(block)
 
-        insert(:token_transfer, from_address: address, transaction: transaction)
+        insert(:token_transfer,
+          from_address: address,
+          transaction: transaction,
+          block: block,
+          block_number: block.number
+        )
       end
 
       options = %{
@@ -990,7 +1387,12 @@ defmodule Explorer.EtherscanTest do
           |> insert()
           |> with_block(block)
 
-        insert(:token_transfer, from_address: address, transaction: transaction)
+        insert(:token_transfer,
+          from_address: address,
+          transaction: transaction,
+          block: block,
+          block_number: block.number
+        )
       end
 
       options = %{start_block: third_block.number}
@@ -1016,7 +1418,12 @@ defmodule Explorer.EtherscanTest do
           |> insert()
           |> with_block(block)
 
-        insert(:token_transfer, from_address: address, transaction: transaction)
+        insert(:token_transfer,
+          from_address: address,
+          transaction: transaction,
+          block: block,
+          block_number: block.number
+        )
       end
 
       options = %{end_block: second_block.number}
@@ -1045,7 +1452,14 @@ defmodule Explorer.EtherscanTest do
         |> with_block()
 
       insert(:token_transfer, from_address: address, transaction: transaction)
-      insert(:token_transfer, from_address: address, token_contract_address: contract_address, transaction: transaction)
+
+      insert(:token_transfer,
+        from_address: address,
+        token_contract_address: contract_address,
+        transaction: transaction,
+        block: transaction.block,
+        block_number: transaction.block_number
+      )
 
       [found_token_transfer] = Etherscan.list_token_transfers(address.hash, contract_address.hash)
 
@@ -1055,7 +1469,7 @@ defmodule Explorer.EtherscanTest do
 
   describe "list_blocks/1" do
     test "it returns all required fields" do
-      %{block_range: range} = block_reward = insert(:block_reward)
+      %{block_range: range} = insert(:emission_reward)
 
       block = insert(:block, number: Enum.random(Range.new(range.from, range.to)))
 
@@ -1066,17 +1480,10 @@ defmodule Explorer.EtherscanTest do
       |> insert(gas_price: 1)
       |> with_block(block, gas_used: 1)
 
-      expected_reward =
-        block_reward.reward
-        |> Wei.to(:wei)
-        |> Decimal.add(Decimal.new(1))
-        |> Wei.from(:wei)
-
       expected = [
         %{
           number: block.number,
-          timestamp: block.timestamp,
-          reward: expected_reward
+          timestamp: block.timestamp
         }
       ]
 
@@ -1084,32 +1491,14 @@ defmodule Explorer.EtherscanTest do
     end
 
     test "with block containing multiple transactions" do
-      %{block_range: range} = block_reward = insert(:block_reward)
+      %{block_range: range} = insert(:emission_reward)
 
       block = insert(:block, number: Enum.random(Range.new(range.from, range.to)))
-
-      # irrelevant transaction
-      insert(:transaction)
-
-      :transaction
-      |> insert(gas_price: 1)
-      |> with_block(block, gas_used: 1)
-
-      :transaction
-      |> insert(gas_price: 1)
-      |> with_block(block, gas_used: 2)
-
-      expected_reward =
-        block_reward.reward
-        |> Wei.to(:wei)
-        |> Decimal.add(Decimal.new(3))
-        |> Wei.from(:wei)
 
       expected = [
         %{
           number: block.number,
-          timestamp: block.timestamp,
-          reward: expected_reward
+          timestamp: block.timestamp
         }
       ]
 
@@ -1117,7 +1506,7 @@ defmodule Explorer.EtherscanTest do
     end
 
     test "with block without transactions" do
-      %{block_range: range} = block_reward = insert(:block_reward)
+      %{block_range: range} = insert(:emission_reward)
 
       block = insert(:block, number: Enum.random(Range.new(range.from, range.to)))
 
@@ -1127,8 +1516,7 @@ defmodule Explorer.EtherscanTest do
       expected = [
         %{
           number: block.number,
-          timestamp: block.timestamp,
-          reward: block_reward.reward
+          timestamp: block.timestamp
         }
       ]
 
@@ -1136,7 +1524,7 @@ defmodule Explorer.EtherscanTest do
     end
 
     test "with multiple blocks" do
-      %{block_range: range} = block_reward = insert(:block_reward)
+      %{block_range: range} = insert(:emission_reward)
 
       block_numbers = Range.new(range.from, range.to)
 
@@ -1147,47 +1535,14 @@ defmodule Explorer.EtherscanTest do
       block1 = insert(:block, number: block_number1, miner: address)
       block2 = insert(:block, number: block_number2, miner: address)
 
-      # irrelevant transaction
-      insert(:transaction)
-
-      :transaction
-      |> insert(gas_price: 2)
-      |> with_block(block1, gas_used: 2)
-
-      :transaction
-      |> insert(gas_price: 2)
-      |> with_block(block1, gas_used: 2)
-
-      :transaction
-      |> insert(gas_price: 3)
-      |> with_block(block2, gas_used: 3)
-
-      :transaction
-      |> insert(gas_price: 3)
-      |> with_block(block2, gas_used: 3)
-
-      expected_reward_block1 =
-        block_reward.reward
-        |> Wei.to(:wei)
-        |> Decimal.add(Decimal.new(8))
-        |> Wei.from(:wei)
-
-      expected_reward_block2 =
-        block_reward.reward
-        |> Wei.to(:wei)
-        |> Decimal.add(Decimal.new(18))
-        |> Wei.from(:wei)
-
       expected = [
         %{
           number: block2.number,
-          timestamp: block2.timestamp,
-          reward: expected_reward_block2
+          timestamp: block2.timestamp
         },
         %{
           number: block1.number,
-          timestamp: block1.timestamp,
-          reward: expected_reward_block1
+          timestamp: block1.timestamp
         }
       ]
 
@@ -1195,7 +1550,7 @@ defmodule Explorer.EtherscanTest do
     end
 
     test "with pagination options" do
-      %{block_range: range} = block_reward = insert(:block_reward)
+      %{block_range: range} = insert(:emission_reward)
 
       block_numbers = Range.new(range.from, range.to)
 
@@ -1206,29 +1561,17 @@ defmodule Explorer.EtherscanTest do
       block1 = insert(:block, number: block_number1, miner: address)
       block2 = insert(:block, number: block_number2, miner: address)
 
-      :transaction
-      |> insert(gas_price: 2)
-      |> with_block(block1, gas_used: 2)
-
-      expected_reward =
-        block_reward.reward
-        |> Wei.to(:wei)
-        |> Decimal.add(Decimal.new(4))
-        |> Wei.from(:wei)
-
       expected1 = [
         %{
           number: block2.number,
-          timestamp: block2.timestamp,
-          reward: block_reward.reward
+          timestamp: block2.timestamp
         }
       ]
 
       expected2 = [
         %{
           number: block1.number,
-          timestamp: block1.timestamp,
-          reward: expected_reward
+          timestamp: block1.timestamp
         }
       ]
 
@@ -1244,46 +1587,13 @@ defmodule Explorer.EtherscanTest do
 
   describe "get_token_balance/2" do
     test "with a single matching token_balance record" do
-      token_balance =
-        %{token_contract_address_hash: contract_address_hash, address_hash: address_hash} = insert(:token_balance)
+      address_current_token_balance =
+        %{token_contract_address_hash: contract_address_hash, address_hash: address_hash} =
+        insert(:address_current_token_balance)
 
       found_token_balance = Etherscan.get_token_balance(contract_address_hash, address_hash)
 
-      assert found_token_balance.id == token_balance.id
-    end
-
-    test "returns token balance in latest block" do
-      token = insert(:token)
-
-      contract_address_hash = token.contract_address_hash
-
-      address = insert(:address)
-
-      token_details1 = %{
-        token_contract_address_hash: contract_address_hash,
-        address: address,
-        block_number: 5
-      }
-
-      token_details2 = %{
-        token_contract_address_hash: contract_address_hash,
-        address: address,
-        block_number: 15
-      }
-
-      token_details3 = %{
-        token_contract_address_hash: contract_address_hash,
-        address: address,
-        block_number: 10
-      }
-
-      _token_balance1 = insert(:token_balance, token_details1)
-      token_balance2 = insert(:token_balance, token_details2)
-      _token_balance3 = insert(:token_balance, token_details3)
-
-      found_token_balance = Etherscan.get_token_balance(contract_address_hash, address.hash)
-
-      assert found_token_balance.id == token_balance2.id
+      assert found_token_balance.id == address_current_token_balance.id
     end
   end
 
@@ -1292,11 +1602,11 @@ defmodule Explorer.EtherscanTest do
       address = insert(:address)
 
       token_balance =
-        :token_balance
+        :address_current_token_balance
         |> insert(address: address)
         |> Repo.preload(:token)
 
-      insert(:token_balance, address: build(:address))
+      insert(:address_current_token_balance, address: build(:address))
 
       token_list = Etherscan.list_tokens(address.hash)
 
@@ -1306,54 +1616,9 @@ defmodule Explorer.EtherscanTest do
           contract_address_hash: token_balance.token_contract_address_hash,
           name: token_balance.token.name,
           decimals: token_balance.token.decimals,
-          symbol: token_balance.token.symbol
-        }
-      ]
-
-      assert token_list == expected_tokens
-    end
-
-    test "returns the latest known balance per token" do
-      # The latest balance is the one with the latest block number
-      address = insert(:address)
-      token = insert(:token)
-
-      token_balance_details1 = %{
-        address: address,
-        token_contract_address_hash: token.contract_address.hash,
-        block_number: 1
-      }
-
-      token_balance_details2 = %{
-        address: address,
-        token_contract_address_hash: token.contract_address.hash,
-        block_number: 2
-      }
-
-      token_balance_details3 = %{
-        address: address,
-        token_contract_address_hash: token.contract_address.hash,
-        block_number: 3
-      }
-
-      insert(:token_balance, token_balance_details1)
-
-      token_balance =
-        :token_balance
-        |> insert(token_balance_details3)
-        |> Repo.preload(:token)
-
-      insert(:token_balance, token_balance_details2)
-
-      token_list = Etherscan.list_tokens(address.hash)
-
-      expected_tokens = [
-        %{
-          balance: token_balance.value,
-          contract_address_hash: token_balance.token_contract_address_hash,
-          name: token_balance.token.name,
-          decimals: token_balance.token.decimals,
-          symbol: token_balance.token.symbol
+          symbol: token_balance.token.symbol,
+          type: token_balance.token.type,
+          id: token_balance.token_id
         }
       ]
 

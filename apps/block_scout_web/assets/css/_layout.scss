@@ -1,3 +1,5 @@
+@import '~@tarekraafat/autocomplete.js/dist/css/autoComplete.01.css';
+
 .layout-container {
   display: flex;
   flex-direction: column;
@@ -5,6 +7,10 @@
 
   main {
     flex-grow: 1;
-    background-color: #FBFAFC;
+    background-color: #fbfafc;
   }
+}
+
+.logs-hash {
+  line-height: 24px !important;
 }

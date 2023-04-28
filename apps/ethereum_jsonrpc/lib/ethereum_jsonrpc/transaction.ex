@@ -7,8 +7,9 @@ defmodule EthereumJSONRPC.Transaction do
   [`eth_getTransactionByBlockHashAndIndex`](https://github.com/ethereum/wiki/wiki/JSON-RPC#eth_gettransactionbyblockhashandindex),
   and [`eth_getTransactionByBlockNumberAndIndex`](https://github.com/ethereum/wiki/wiki/JSON-RPC#eth_gettransactionbyblocknumberandindex)
   """
+  require Logger
 
-  import EthereumJSONRPC, only: [quantity_to_integer: 1]
+  import EthereumJSONRPC, only: [quantity_to_integer: 1, integer_to_quantity: 1, request: 1]
 
   alias EthereumJSONRPC
 
@@ -39,7 +40,10 @@ defmodule EthereumJSONRPC.Transaction do
    * `"transactionIndex"` - `t:EthereumJSONRPC.quantity/0` for the index of the transaction in the block.  `nil` when
      transaction is pending.
    * `"v"` - `t:EthereumJSONRPC.quantity/0` for the V field of the signature.
-   * `"value"` - `t:EthereumJSONRPC.quantity/0` of wei transferred
+   * `"value"` - `t:EthereumJSONRPC.quantity/0` of wei transferred.
+   * `"maxPriorityFeePerGas"` - `t:EthereumJSONRPC.quantity/0` of wei to denote max priority fee per unit of gas used. Introduced in [EIP-1559](https://github.com/ethereum/EIPs/blob/master/EIPS/eip-1559.md)
+   * `"maxFeePerGas"` - `t:EthereumJSONRPC.quantity/0` of wei to denote max fee per unit of gas used. Introduced in [EIP-1559](https://github.com/ethereum/EIPs/blob/master/EIPS/eip-1559.md)
+   * `"type"` - `t:EthereumJSONRPC.quantity/0` denotes transaction type. Introduced in [EIP-1559](https://github.com/ethereum/EIPs/blob/master/EIPS/eip-1559.md)
   """
   @type t :: %{
           String.t() =>
@@ -60,11 +64,15 @@ defmodule EthereumJSONRPC.Transaction do
           s: non_neg_integer(),
           to_address_hash: EthereumJSONRPC.address(),
           v: non_neg_integer(),
-          value: non_neg_integer()
+          value: non_neg_integer(),
+          transaction_index: non_neg_integer(),
+          max_priority_fee_per_gas: non_neg_integer(),
+          max_fee_per_gas: non_neg_integer(),
+          type: non_neg_integer()
         }
 
   @doc """
-  Geth `elixir` can be converted to `params`.  Geth does not supply `"publicKey"` or `"standardV"`, unlike Parity.
+  Geth `elixir` can be converted to `params`.  Geth does not supply `"publicKey"` or `"standardV"`, unlike Nethermind.
 
       iex> EthereumJSONRPC.Transaction.elixir_to_params(
       ...>   %{
@@ -98,28 +106,76 @@ defmodule EthereumJSONRPC.Transaction do
         s: 31606574786494953692291101914709926755545765281581808821704454381804773090106,
         to_address_hash: "0x5df9b87991262f6ba471f09758cde1c0fc1de734",
         v: 28,
-        value: 31337
+        value: 31337,
+        transaction_index: 0
       }
 
+  Erigon `elixir` from txpool_content method can be converted to `params`.
+
+      iex> EthereumJSONRPC.Transaction.elixir_to_params(
+      ...>   %{
+      ...>     "blockHash" => nil,
+      ...>     "blockNumber" => nil,
+      ...>     "from" => "0x870006d72c247bc1e90983c71b3234ee01d3c9d9",
+      ...>     "gas" => 182154,
+      ...>     "hash" => "0x8d2cd1fae48ea0d2a20bb74abbfca05c2d805793e1b42fa844bbdd90f2512f39",
+      ...>     "input" => "0x08dc9f4200000000000000000000000000000000000000000000000000000000000000010000000000000000000000000000000000000000000000000000000062ad7e5d00000000000000000000000000000000000000000000000000000000000000600000000000000000000000000000000000000000000000000000000000000041ea9764027fc630affb1825e91d830d1e4e9b6e701ce6eb531f7262787739466d0fc8ac23d0496ec1386d6727f3958fc147719d12a4a23b3e592fb7f499006e041b00000000000000000000000000000000000000000000000000000000000000",
+      ...>     "maxFeePerGas" => 169648965806,
+      ...>     "maxPriorityFeePerGas" => 0,
+      ...>     "nonce" => 12,
+      ...>     "r" => 54145857155959999983086152958232689936309058616635618472746031287964711695698,
+      ...>     "s" => 15362740689264852081830165187058601082381583930006578342376475668171980574077,
+      ...>     "to" => "0x7a41e410bb784d9875fa14f2d7d2fa825466cdae",
+      ...>     "transactionIndex" => nil,
+      ...>     "type" => 2,
+      ...>     "v" => 0,
+      ...>     "value" => 275000000000000000
+      ...>   }
+      ...> )
+      %{
+        block_hash: nil,
+        block_number: nil,
+        from_address_hash: "0x870006d72c247bc1e90983c71b3234ee01d3c9d9",
+        gas: 182154,
+        hash: "0x8d2cd1fae48ea0d2a20bb74abbfca05c2d805793e1b42fa844bbdd90f2512f39",
+        index: nil,
+        input: "0x08dc9f4200000000000000000000000000000000000000000000000000000000000000010000000000000000000000000000000000000000000000000000000062ad7e5d00000000000000000000000000000000000000000000000000000000000000600000000000000000000000000000000000000000000000000000000000000041ea9764027fc630affb1825e91d830d1e4e9b6e701ce6eb531f7262787739466d0fc8ac23d0496ec1386d6727f3958fc147719d12a4a23b3e592fb7f499006e041b00000000000000000000000000000000000000000000000000000000000000",
+        max_fee_per_gas: 169648965806,
+        max_priority_fee_per_gas: 0,
+        nonce: 12,
+        r: 54145857155959999983086152958232689936309058616635618472746031287964711695698,
+        s: 15362740689264852081830165187058601082381583930006578342376475668171980574077,
+        to_address_hash: "0x7a41e410bb784d9875fa14f2d7d2fa825466cdae",
+        transaction_index: nil,
+        type: 2,
+        v: 0,
+        value: 275000000000000000
+      }
   """
   @spec elixir_to_params(elixir) :: params
-  def elixir_to_params(%{
-        "blockHash" => block_hash,
-        "blockNumber" => block_number,
-        "from" => from_address_hash,
-        "gas" => gas,
-        "gasPrice" => gas_price,
-        "hash" => hash,
-        "input" => input,
-        "nonce" => nonce,
-        "r" => r,
-        "s" => s,
-        "to" => to_address_hash,
-        "transactionIndex" => index,
-        "v" => v,
-        "value" => value
-      }) do
-    %{
+
+  def elixir_to_params(
+        %{
+          "blockHash" => block_hash,
+          "blockNumber" => block_number,
+          "from" => from_address_hash,
+          "gas" => gas,
+          "gasPrice" => gas_price,
+          "hash" => hash,
+          "input" => input,
+          "nonce" => nonce,
+          "r" => r,
+          "s" => s,
+          "to" => to_address_hash,
+          "transactionIndex" => index,
+          "v" => v,
+          "value" => value,
+          "type" => type,
+          "maxPriorityFeePerGas" => max_priority_fee_per_gas,
+          "maxFeePerGas" => max_fee_per_gas
+        } = transaction
+      ) do
+    result = %{
       block_hash: block_hash,
       block_number: block_number,
       from_address_hash: from_address_hash,
@@ -133,8 +189,155 @@ defmodule EthereumJSONRPC.Transaction do
       s: s,
       to_address_hash: to_address_hash,
       v: v,
-      value: value
+      value: value,
+      transaction_index: index,
+      type: type,
+      max_priority_fee_per_gas: max_priority_fee_per_gas,
+      max_fee_per_gas: max_fee_per_gas
     }
+
+    if transaction["creates"] do
+      Map.put(result, :created_contract_address_hash, transaction["creates"])
+    else
+      result
+    end
+  end
+
+  # txpool_content method on Erigon node returns tx data
+  # without gas price
+  def elixir_to_params(
+        %{
+          "blockHash" => block_hash,
+          "blockNumber" => block_number,
+          "from" => from_address_hash,
+          "gas" => gas,
+          "hash" => hash,
+          "input" => input,
+          "nonce" => nonce,
+          "r" => r,
+          "s" => s,
+          "to" => to_address_hash,
+          "transactionIndex" => index,
+          "v" => v,
+          "value" => value,
+          "type" => type,
+          "maxPriorityFeePerGas" => max_priority_fee_per_gas,
+          "maxFeePerGas" => max_fee_per_gas
+        } = transaction
+      ) do
+    result = %{
+      block_hash: block_hash,
+      block_number: block_number,
+      from_address_hash: from_address_hash,
+      gas: gas,
+      hash: hash,
+      index: index,
+      input: input,
+      nonce: nonce,
+      r: r,
+      s: s,
+      to_address_hash: to_address_hash,
+      v: v,
+      value: value,
+      transaction_index: index,
+      type: type,
+      max_priority_fee_per_gas: max_priority_fee_per_gas,
+      max_fee_per_gas: max_fee_per_gas
+    }
+
+    if transaction["creates"] do
+      Map.put(result, :created_contract_address_hash, transaction["creates"])
+    else
+      result
+    end
+  end
+
+  def elixir_to_params(
+        %{
+          "blockHash" => block_hash,
+          "blockNumber" => block_number,
+          "from" => from_address_hash,
+          "gas" => gas,
+          "gasPrice" => gas_price,
+          "hash" => hash,
+          "input" => input,
+          "nonce" => nonce,
+          "r" => r,
+          "s" => s,
+          "to" => to_address_hash,
+          "transactionIndex" => index,
+          "v" => v,
+          "value" => value,
+          "type" => type
+        } = transaction
+      ) do
+    result = %{
+      block_hash: block_hash,
+      block_number: block_number,
+      from_address_hash: from_address_hash,
+      gas: gas,
+      gas_price: gas_price,
+      hash: hash,
+      index: index,
+      input: input,
+      nonce: nonce,
+      r: r,
+      s: s,
+      to_address_hash: to_address_hash,
+      v: v,
+      value: value,
+      transaction_index: index,
+      type: type
+    }
+
+    if transaction["creates"] do
+      Map.put(result, :created_contract_address_hash, transaction["creates"])
+    else
+      result
+    end
+  end
+
+  def elixir_to_params(
+        %{
+          "blockHash" => block_hash,
+          "blockNumber" => block_number,
+          "from" => from_address_hash,
+          "gas" => gas,
+          "gasPrice" => gas_price,
+          "hash" => hash,
+          "input" => input,
+          "nonce" => nonce,
+          "r" => r,
+          "s" => s,
+          "to" => to_address_hash,
+          "transactionIndex" => index,
+          "v" => v,
+          "value" => value
+        } = transaction
+      ) do
+    result = %{
+      block_hash: block_hash,
+      block_number: block_number,
+      from_address_hash: from_address_hash,
+      gas: gas,
+      gas_price: gas_price,
+      hash: hash,
+      index: index,
+      input: input,
+      nonce: nonce,
+      r: r,
+      s: s,
+      to_address_hash: to_address_hash,
+      v: v,
+      value: value,
+      transaction_index: index
+    }
+
+    if transaction["creates"] do
+      Map.put(result, :created_contract_address_hash, transaction["creates"])
+    else
+      result
+    end
   end
 
   @doc """
@@ -219,15 +422,48 @@ defmodule EthereumJSONRPC.Transaction do
     Enum.into(transaction, %{}, &entry_to_elixir/1)
   end
 
+  def to_elixir(transaction) when is_binary(transaction) do
+    #    Logger.warn(["Fetched transaction is not full: ", transaction])
+
+    nil
+  end
+
+  def eth_call_request(id, block_number, data, to, from, gas, gas_price, value) do
+    block =
+      case block_number do
+        nil -> "latest"
+        block_number -> integer_to_quantity(block_number)
+      end
+
+    request(%{
+      id: id,
+      method: "eth_call",
+      params: [%{to: to, from: from, data: data, gas: gas, gasPrice: gas_price, value: value}, block]
+    })
+  end
+
   # double check that no new keys are being missed by requiring explicit match for passthrough
   # `t:EthereumJSONRPC.address/0` and `t:EthereumJSONRPC.hash/0` pass through as `Explorer.Chain` can verify correct
   # hash format
+  #
+  # "txType": to avoid FunctionClauseError when indexing Wanchain
   defp entry_to_elixir({key, value})
-       when key in ~w(blockHash condition creates from hash input jsonrpc publicKey raw to),
+       when key in ~w(blockHash condition creates from hash input jsonrpc publicKey raw to txType),
        do: {key, value}
 
-  defp entry_to_elixir({key, quantity}) when key in ~w(gas gasPrice nonce r s standardV v value) and quantity != nil do
+  # specific to Nethermind client
+  defp entry_to_elixir({"data", value}),
+    do: {"input", value}
+
+  defp entry_to_elixir({key, quantity})
+       when key in ~w(gas gasPrice nonce r s standardV v value type maxPriorityFeePerGas maxFeePerGas) and
+              quantity != nil do
     {key, quantity_to_integer(quantity)}
+  end
+
+  # as always ganache has it's own vision on JSON RPC standard
+  defp entry_to_elixir({key, nil}) when key in ~w(r s v) do
+    {key, 0}
   end
 
   # quantity or nil for pending
@@ -247,5 +483,9 @@ defmodule EthereumJSONRPC.Transaction do
       nil -> {key, chain_id}
       _ -> {key, quantity_to_integer(chain_id)}
     end
+  end
+
+  defp entry_to_elixir(_) do
+    {nil, nil}
   end
 end

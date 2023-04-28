@@ -7,94 +7,86 @@ defmodule EthereumJSONRPC.Encoder do
   alias ABI.TypeDecoder
 
   @doc """
-  Given an ABI and a set of functions, returns the data the blockchain expects.
-  """
-  @spec encode_abi([map()], %{String.t() => [any()]}) :: map()
-  def encode_abi(abi, functions) do
-    abi
-    |> ABI.parse_specification()
-    |> get_selectors(functions)
-    |> Enum.map(&encode_function_call/1)
-    |> Map.new()
-  end
-
-  @doc """
-  Given a list of function selectors from the ABI lib, and a list of functions names with their arguments, returns a list of selectors with their functions.
-  """
-  @spec get_selectors([%ABI.FunctionSelector{}], %{String.t() => [term()]}) :: [{%ABI.FunctionSelector{}, [term()]}]
-  def get_selectors(abi, functions) do
-    Enum.map(functions, fn {function_name, args} ->
-      {get_selector_from_name(abi, function_name), args}
-    end)
-  end
-
-  @doc """
-  Given a list of function selectors from the ABI lib, and a function name, get the selector for that function.
-  """
-  @spec get_selector_from_name([%ABI.FunctionSelector{}], String.t()) :: %ABI.FunctionSelector{}
-  def get_selector_from_name(abi, function_name) do
-    Enum.find(abi, fn selector -> function_name == selector.function end)
-  end
-
-  @doc """
   Given a function selector and a list of arguments, returns their encoded versions.
 
   This is what is expected on the Json RPC data parameter.
   """
-  @spec encode_function_call({%ABI.FunctionSelector{}, [term()]}) :: {String.t(), String.t()}
-  def encode_function_call({function_selector, args}) do
+  @spec encode_function_call(ABI.FunctionSelector.t(), [term()]) :: String.t()
+  def encode_function_call(function_selector, args) when is_list(args) do
+    parsed_args = parse_args(args)
+
     encoded_args =
       function_selector
-      |> ABI.encode(parse_args(args))
+      |> ABI.encode(parsed_args)
       |> Base.encode16(case: :lower)
 
-    {function_selector.function, "0x" <> encoded_args}
+    "0x" <> encoded_args
   end
 
-  defp parse_args(args) do
+  def encode_function_call(function_selector, args), do: encode_function_call(function_selector, [args])
+
+  defp parse_args(args) when is_list(args) do
     args
-    |> Enum.map(fn
-      <<"0x", hexadecimal_digits::binary>> ->
-        Base.decode16!(hexadecimal_digits, case: :mixed)
-
-      item ->
-        item
-    end)
+    |> Enum.map(&parse_args/1)
   end
 
-  @doc """
-  Given a result set from the blockchain, and the functions selectors, returns the results decoded.
+  defp parse_args(<<"0x", hexadecimal_digits::binary>>), do: Base.decode16!(hexadecimal_digits, case: :mixed)
 
-  This functions assumes the result["id"] is the name of the function the result is for.
-  """
-  @spec decode_abi_results([map()], [map()], %{String.t() => [any()]}) :: map()
-  def decode_abi_results(results, abi, functions) do
-    selectors =
-      abi
-      |> ABI.parse_specification()
-      |> get_selectors(functions)
-      |> Enum.map(fn {selector, _args} -> selector end)
+  defp parse_args(<<hexadecimal_digits::binary>>), do: try_to_decode(hexadecimal_digits)
 
-    results
-    |> Stream.map(&join_result_and_selector(&1, selectors))
-    |> Stream.map(&decode_result/1)
-    |> Map.new()
-  end
+  defp parse_args(arg), do: arg
 
-  defp join_result_and_selector(result, selectors) do
-    {result, Enum.find(selectors, &(&1.function == result[:id]))}
+  defp try_to_decode(hexadecimal_digits) do
+    case Base.decode16(hexadecimal_digits, case: :mixed) do
+      {:ok, decoded_value} ->
+        decoded_value
+
+      _ ->
+        hexadecimal_digits
+    end
   end
 
   @doc """
   Given a result from the blockchain, and the function selector, returns the result decoded.
   """
-  @spec decode_result({map(), %ABI.FunctionSelector{}}) ::
+  def decode_result(_, _, leave_error_as_map \\ false)
+
+  @spec decode_result(map(), ABI.FunctionSelector.t() | [ABI.FunctionSelector.t()]) ::
           {String.t(), {:ok, any()} | {:error, String.t() | :invalid_data}}
-  def decode_result({%{error: %{code: code, message: message}, id: id}, _selector}) do
-    {id, {:error, "(#{code}) #{message}"}}
+  def decode_result(%{error: %{code: code, data: data, message: message}, id: id}, _selector, leave_error_as_map) do
+    if leave_error_as_map do
+      {id, {:error, %{code: code, message: message, data: data}}}
+    else
+      {id, {:error, "(#{code}) #{message} (#{data})"}}
+    end
   end
 
-  def decode_result({%{id: id, result: result}, function_selector}) do
+  def decode_result(%{error: %{code: code, message: message}, id: id}, _selector, leave_error_as_map) do
+    if leave_error_as_map do
+      {id, {:error, %{code: code, message: message}}}
+    else
+      {id, {:error, "(#{code}) #{message}"}}
+    end
+  end
+
+  def decode_result(result, selectors, _leave_error_as_map) when is_list(selectors) do
+    selectors
+    |> Enum.map(fn selector ->
+      try do
+        decode_result(result, selector)
+      rescue
+        _ -> :error
+      end
+    end)
+    |> Enum.find(fn decode ->
+      case decode do
+        {_id, {:ok, _}} -> true
+        _ -> false
+      end
+    end)
+  end
+
+  def decode_result(%{id: id, result: result}, function_selector, _leave_error_as_map) do
     types_list = List.wrap(function_selector.returns)
 
     decoded_data =
@@ -102,10 +94,27 @@ defmodule EthereumJSONRPC.Encoder do
       |> String.slice(2..-1)
       |> Base.decode16!(case: :lower)
       |> TypeDecoder.decode_raw(types_list)
+      |> Enum.zip(types_list)
+      |> Enum.map(fn
+        {value, :address} -> "0x" <> Base.encode16(value, case: :lower)
+        {value, :string} -> unescape(value)
+        {value, _} -> value
+      end)
 
     {id, {:ok, decoded_data}}
   rescue
     MatchError ->
       {id, {:error, :invalid_data}}
+  end
+
+  def unescape(data) do
+    if String.starts_with?(data, "\\x") do
+      charlist = String.to_charlist(data)
+      erlang_literal = '"#{charlist}"'
+      {:ok, [{:string, _, unescaped_charlist}], _} = :erl_scan.string(erlang_literal)
+      List.to_string(unescaped_charlist)
+    else
+      data
+    end
   end
 end

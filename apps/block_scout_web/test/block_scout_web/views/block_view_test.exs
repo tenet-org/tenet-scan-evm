@@ -34,8 +34,9 @@ defmodule BlockScoutWeb.BlockViewTest do
     test "returns Uncle" do
       uncle = insert(:block, consensus: false)
       insert(:block_second_degree_relation, uncle_hash: uncle.hash)
+      preloaded = Repo.preload(uncle, :nephews)
 
-      assert BlockView.block_type(uncle) == "Uncle"
+      assert BlockView.block_type(preloaded) == "Uncle"
     end
   end
 
@@ -45,6 +46,53 @@ defmodule BlockScoutWeb.BlockViewTest do
 
       assert Timex.format!(block.timestamp, "%b-%d-%Y %H:%M:%S %p %Z", :strftime) ==
                BlockView.formatted_timestamp(block)
+    end
+  end
+
+  describe "show_reward?/1" do
+    test "returns false when list of rewards is empty" do
+      assert BlockView.show_reward?([]) == false
+    end
+
+    test "returns true when list of rewards is not empty" do
+      block = insert(:block)
+      validator = insert(:reward, address_hash: block.miner_hash, block_hash: block.hash, address_type: :validator)
+
+      assert BlockView.show_reward?([validator]) == true
+    end
+  end
+
+  describe "combined_rewards_value/1" do
+    test "returns all the reward values summed up and formatted into a String" do
+      block = insert(:block)
+
+      insert(
+        :reward,
+        address_hash: block.miner_hash,
+        block_hash: block.hash,
+        address_type: :validator,
+        reward: Decimal.new(1_000_000_000_000_000_000)
+      )
+
+      insert(
+        :reward,
+        address_hash: block.miner_hash,
+        block_hash: block.hash,
+        address_type: :emission_funds,
+        reward: Decimal.new(1_000_000_000_000_000_000)
+      )
+
+      insert(
+        :reward,
+        address_hash: block.miner_hash,
+        block_hash: block.hash,
+        address_type: :uncle,
+        reward: Decimal.new(1_000_042_000_000_000_000)
+      )
+
+      block = Repo.preload(block, :rewards)
+
+      assert BlockView.combined_rewards_value(block) == "3.000042 ETH"
     end
   end
 end

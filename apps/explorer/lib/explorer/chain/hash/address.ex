@@ -8,7 +8,7 @@ defmodule Explorer.Chain.Hash.Address do
 
   alias Explorer.Chain.Hash
 
-  @behaviour Ecto.Type
+  use Ecto.Type
   @behaviour Hash
 
   @byte_count 20
@@ -166,7 +166,7 @@ defmodule Explorer.Chain.Hash.Address do
       iex> Explorer.Chain.Hash.Address.validate("0xc1912fEE45d61C87Cc5EA59DaE31190FFFFf232H")
       {:error, :invalid_characters}
   """
-  @spec validate(String.t()) :: {:ok, String.t()} | {:error, :invalid_length | :invalid_characters, :invalid_checksum}
+  @spec validate(String.t()) :: {:ok, String.t()} | {:error, :invalid_length | :invalid_characters | :invalid_checksum}
   def validate("0x" <> hash) do
     with {:length, true} <- {:length, String.length(hash) == 40},
          {:hex, true} <- {:hex, is_hex?(hash)},
@@ -212,7 +212,7 @@ defmodule Explorer.Chain.Hash.Address do
   @spec is_checksummed?(String.t()) :: boolean()
   defp is_checksummed?(original_hash) do
     lowercase_hash = String.downcase(original_hash)
-    sha3_hash = :keccakf1600.hash(:sha3_256, lowercase_hash)
+    sha3_hash = ExKeccak.hash_256(lowercase_hash)
 
     do_checksum_check(sha3_hash, original_hash)
   end

@@ -1,10 +1,16 @@
 defmodule BlockScoutWeb.API.RPC.AddressView do
   use BlockScoutWeb, :view
 
+  alias BlockScoutWeb.API.EthRPC.View, as: EthRPCView
   alias BlockScoutWeb.API.RPC.RPCView
 
+  def render("listaccounts.json", %{accounts: accounts}) do
+    accounts = Enum.map(accounts, &prepare_account/1)
+    RPCView.render("show.json", data: accounts)
+  end
+
   def render("balance.json", %{addresses: [address]}) do
-    RPCView.render("show.json", data: "#{address.fetched_coin_balance.value}")
+    RPCView.render("show.json", data: balance(address))
   end
 
   def render("balance.json", assigns) do
@@ -12,14 +18,13 @@ defmodule BlockScoutWeb.API.RPC.AddressView do
   end
 
   def render("balancemulti.json", %{addresses: addresses}) do
-    data =
-      Enum.map(addresses, fn address ->
-        %{
-          "account" => "#{address.hash}",
-          "balance" => "#{address.fetched_coin_balance.value}"
-        }
-      end)
+    data = Enum.map(addresses, &render_address/1)
 
+    RPCView.render("show.json", data: data)
+  end
+
+  def render("pendingtxlist.json", %{transactions: transactions}) do
+    data = Enum.map(transactions, &prepare_pending_transaction/1)
     RPCView.render("show.json", data: data)
   end
 
@@ -52,8 +57,48 @@ defmodule BlockScoutWeb.API.RPC.AddressView do
     RPCView.render("show.json", data: data)
   end
 
+  def render("eth_get_balance.json", %{balance: balance}) do
+    EthRPCView.render("show.json", %{result: balance, id: 0})
+  end
+
+  def render("eth_get_balance_error.json", %{error: message}) do
+    EthRPCView.render("error.json", %{error: message, id: 0})
+  end
+
   def render("error.json", assigns) do
     RPCView.render("error.json", assigns)
+  end
+
+  defp render_address(address) do
+    %{
+      "account" => "#{address.hash}",
+      "balance" => balance(address),
+      "stale" => address.stale? || false
+    }
+  end
+
+  defp prepare_account(address) do
+    %{
+      "balance" => to_string(address.fetched_coin_balance && address.fetched_coin_balance.value),
+      "address" => to_string(address.hash),
+      "stale" => address.stale? || false
+    }
+  end
+
+  defp prepare_pending_transaction(transaction) do
+    %{
+      "hash" => "#{transaction.hash}",
+      "nonce" => "#{transaction.nonce}",
+      "from" => "#{transaction.from_address_hash}",
+      "to" => "#{transaction.to_address_hash}",
+      "value" => "#{transaction.value.value}",
+      "gas" => "#{transaction.gas}",
+      "gasPrice" => "#{transaction.gas_price.value}",
+      "input" => "#{transaction.input}",
+      "contractAddress" => "#{transaction.created_contract_address_hash}",
+      "cumulativeGasUsed" => "#{transaction.cumulative_gas_used}",
+      "gasUsed" => "#{transaction.gas_used}"
+    }
   end
 
   defp prepare_transaction(transaction) do
@@ -87,8 +132,11 @@ defmodule BlockScoutWeb.API.RPC.AddressView do
       "to" => "#{internal_transaction.to_address_hash}",
       "value" => "#{internal_transaction.value.value}",
       "contractAddress" => "#{internal_transaction.created_contract_address_hash}",
+      "transactionHash" => to_string(internal_transaction.transaction_hash),
+      "index" => to_string(internal_transaction.index),
       "input" => "#{internal_transaction.input}",
       "type" => "#{internal_transaction.type}",
+      "callType" => "#{internal_transaction.call_type}",
       "gas" => "#{internal_transaction.gas}",
       "gasUsed" => "#{internal_transaction.gas_used}",
       "isError" => if(internal_transaction.error, do: "1", else: "0"),
@@ -96,7 +144,7 @@ defmodule BlockScoutWeb.API.RPC.AddressView do
     }
   end
 
-  defp prepare_token_transfer(token_transfer) do
+  defp prepare_common_token_transfer(token_transfer) do
     %{
       "blockNumber" => to_string(token_transfer.block_number),
       "timeStamp" => to_string(DateTime.to_unix(token_transfer.block_timestamp)),
@@ -106,7 +154,7 @@ defmodule BlockScoutWeb.API.RPC.AddressView do
       "from" => to_string(token_transfer.from_address_hash),
       "contractAddress" => to_string(token_transfer.token_contract_address_hash),
       "to" => to_string(token_transfer.to_address_hash),
-      "value" => to_string(token_transfer.amount),
+      "logIndex" => to_string(token_transfer.token_log_index),
       "tokenName" => token_transfer.token_name,
       "tokenSymbol" => token_transfer.token_symbol,
       "tokenDecimal" => to_string(token_transfer.token_decimals),
@@ -120,11 +168,39 @@ defmodule BlockScoutWeb.API.RPC.AddressView do
     }
   end
 
+  defp prepare_token_transfer(%{token_type: "ERC-721"} = token_transfer) do
+    token_transfer
+    |> prepare_common_token_transfer()
+    |> Map.put_new(:tokenID, List.first(token_transfer.token_ids))
+  end
+
+  defp prepare_token_transfer(%{token_type: "ERC-1155", token_ids: [token_id]} = token_transfer) do
+    token_transfer
+    |> prepare_common_token_transfer()
+    |> Map.put_new(:tokenID, token_id)
+  end
+
+  defp prepare_token_transfer(%{token_type: "ERC-1155"} = token_transfer) do
+    token_transfer
+    |> prepare_common_token_transfer()
+    |> Map.put_new(:tokenIDs, token_transfer.token_ids)
+    |> Map.put_new(:values, token_transfer.amounts)
+  end
+
+  defp prepare_token_transfer(%{token_type: "ERC-20"} = token_transfer) do
+    token_transfer
+    |> prepare_common_token_transfer()
+    |> Map.put_new(:value, to_string(token_transfer.amount))
+  end
+
+  defp prepare_token_transfer(token_transfer) do
+    prepare_common_token_transfer(token_transfer)
+  end
+
   defp prepare_block(block) do
     %{
       "blockNumber" => to_string(block.number),
-      "timeStamp" => to_string(block.timestamp),
-      "blockReward" => to_string(block.reward.value)
+      "timeStamp" => to_string(block.timestamp)
     }
   end
 
@@ -134,7 +210,13 @@ defmodule BlockScoutWeb.API.RPC.AddressView do
       "contractAddress" => to_string(token.contract_address_hash),
       "name" => token.name,
       "decimals" => to_string(token.decimals),
-      "symbol" => token.symbol
+      "symbol" => token.symbol,
+      "type" => token.type
     }
+    |> (&if(is_nil(token.id), do: &1, else: Map.put(&1, "id", token.id))).()
+  end
+
+  defp balance(address) do
+    address.fetched_coin_balance && address.fetched_coin_balance.value && "#{address.fetched_coin_balance.value}"
   end
 end

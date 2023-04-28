@@ -11,7 +11,11 @@ defmodule Indexer.Block.Catchup.BoundIntervalSupervisor do
   alias Indexer.{Block, BoundInterval}
   alias Indexer.Block.Catchup
 
-  @type named_arguments :: %{required(:block_fetcher) => Block.Fetcher.t(), optional(:block_interval) => pos_integer}
+  @type named_arguments :: %{
+          required(:block_fetcher) => Block.Fetcher.t(),
+          optional(:block_interval) => pos_integer,
+          optional(:memory_monitor) => GenServer.server()
+        }
 
   # milliseconds
   @block_interval 5_000
@@ -19,6 +23,7 @@ defmodule Indexer.Block.Catchup.BoundIntervalSupervisor do
   @enforce_keys ~w(bound_interval fetcher)a
   defstruct bound_interval: nil,
             fetcher: %Catchup.Fetcher{},
+            memory_monitor: nil,
             task: nil
 
   @spec child_spec([named_arguments | GenServer.options(), ...]) :: Supervisor.child_spec()
@@ -48,6 +53,8 @@ defmodule Indexer.Block.Catchup.BoundIntervalSupervisor do
 
   @impl GenServer
   def init(named_arguments) do
+    Logger.metadata(fetcher: :block_catchup)
+
     state = new(named_arguments)
 
     send(self(), :catchup_index)
@@ -63,7 +70,7 @@ defmodule Indexer.Block.Catchup.BoundIntervalSupervisor do
     bound_interval = BoundInterval.within(minimum_interval..(minimum_interval * 10))
 
     %__MODULE__{
-      fetcher: %Catchup.Fetcher{block_fetcher: block_fetcher},
+      fetcher: %Catchup.Fetcher{block_fetcher: block_fetcher, memory_monitor: Map.get(named_arguments, :memory_monitor)},
       bound_interval: bound_interval
     }
   end
@@ -177,7 +184,13 @@ defmodule Indexer.Block.Catchup.BoundIntervalSupervisor do
   end
 
   def handle_info(
-        {ref, %{first_block_number: first_block_number, missing_block_count: missing_block_count}},
+        {ref,
+         %{
+           first_block_number: first_block_number,
+           last_block_number: last_block_number,
+           missing_block_count: missing_block_count,
+           shrunk: false = shrunk
+         }},
         %__MODULE__{
           bound_interval: bound_interval,
           task: %Task{ref: ref}
@@ -187,12 +200,23 @@ defmodule Indexer.Block.Catchup.BoundIntervalSupervisor do
     new_bound_interval =
       case missing_block_count do
         0 ->
-          Logger.info("Index already caught up in #{first_block_number}-0")
+          Logger.info("Index already caught up.",
+            first_block_number: first_block_number,
+            last_block_number: last_block_number,
+            missing_block_count: 0,
+            shrunk: shrunk
+          )
 
           BoundInterval.increase(bound_interval)
 
         _ ->
-          Logger.info("Index had to catch up #{missing_block_count} blocks in #{first_block_number}-0")
+          Logger.info(
+            "Index had to catch up.",
+            first_block_number: first_block_number,
+            last_block_number: last_block_number,
+            missing_block_count: missing_block_count,
+            shrunk: shrunk
+          )
 
           BoundInterval.decrease(bound_interval)
       end
@@ -202,7 +226,7 @@ defmodule Indexer.Block.Catchup.BoundIntervalSupervisor do
     interval = new_bound_interval.current
 
     Logger.info(fn ->
-      "Checking if index needs to catch up in #{interval}ms"
+      ["Checking if index needs to catch up in ", to_string(interval), "ms."]
     end)
 
     Process.send_after(self(), :catchup_index, interval)
@@ -211,8 +235,97 @@ defmodule Indexer.Block.Catchup.BoundIntervalSupervisor do
   end
 
   def handle_info(
+        {ref,
+         %{
+           first_block_number: first_block_number,
+           missing_block_count: missing_block_count,
+           last_block_number: last_block_number,
+           shrunk: true = shrunk
+         }},
+        %__MODULE__{
+          task: %Task{ref: ref}
+        } = state
+      )
+      when is_integer(missing_block_count) do
+    Process.demonitor(ref, [:flush])
+
+    Logger.info(
+      "Index had to catch up, but the sequence was shrunk to save memory, so retrying immediately.",
+      first_block_number: first_block_number,
+      last_block_number: last_block_number,
+      missing_block_count: missing_block_count,
+      shrunk: shrunk
+    )
+
+    send(self(), :catchup_index)
+
+    {:noreply, %__MODULE__{state | task: nil}}
+  end
+
+  def handle_info(
+        {ref, {:error, :etimedout}},
+        %__MODULE__{
+          task: %Task{ref: ref}
+        } = state
+      ) do
+    Logger.info("Index had to catch up, but the request is timing out, so retrying immediately.")
+
+    send(self(), :catchup_index)
+
+    {:noreply, %__MODULE__{state | task: nil}}
+  end
+
+  def handle_info(
+        {_ref1, {:error, :enetunreach}},
+        %__MODULE__{
+          task: _
+        } = state
+      ) do
+    Logger.info("Index had to catch up, but the request is timing out, so retrying immediately.")
+
+    send(self(), :catchup_index)
+
+    {:noreply, %__MODULE__{state | task: nil}}
+  end
+
+  def handle_info(
+        {_ref, {:error, :econnrefused}},
+        %__MODULE__{
+          fetcher: %Catchup.Fetcher{
+            block_fetcher: %Block.Fetcher{
+              json_rpc_named_arguments: [
+                transport: _,
+                transport_options: options,
+                variant: _
+              ]
+            }
+          },
+          task: _
+        } = state
+      ) do
+    Logger.error(fn ->
+      "Catchup index stream exited because the archive node endpoint at #{Keyword.get(options, :url)} is unavailable. Restarting"
+    end)
+
+    send(self(), :catchup_index)
+
+    {:noreply, %__MODULE__{state | task: nil}}
+  end
+
+  def handle_info(
         {:DOWN, ref, :process, pid, reason},
         %__MODULE__{task: %Task{pid: pid, ref: ref}} = state
+      ) do
+    Logger.error(fn -> "Catchup index stream exited with reason (#{inspect(reason)}). Restarting" end)
+
+    send(self(), :catchup_index)
+
+    {:noreply, %__MODULE__{state | task: nil}}
+  end
+
+  def handle_info(
+        {:DOWN, _ref, :process, _pid, reason},
+        %__MODULE__{task: nil} = state
       ) do
     Logger.error(fn -> "Catchup index stream exited with reason (#{inspect(reason)}). Restarting" end)
 

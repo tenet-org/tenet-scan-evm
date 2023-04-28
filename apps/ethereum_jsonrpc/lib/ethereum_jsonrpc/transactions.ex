@@ -55,7 +55,9 @@ defmodule EthereumJSONRPC.Transactions do
           s: "0x72caddc0371451a58de2ca6ab64e0f586ccdb9465ff54e1c82564940e89291e3",
           to_address_hash: nil,
           v: "0xbd",
-          value: 0
+          value: 0,
+          transaction_index: 0,
+          created_contract_address_hash: "0xffc87239eb0267bc3ca2cd51d12fbf278e02ccb4"
         }
       ]
 
@@ -150,6 +152,8 @@ defmodule EthereumJSONRPC.Transactions do
 
   """
   def to_elixir(transactions) when is_list(transactions) do
-    Enum.map(transactions, &Transaction.to_elixir/1)
+    transactions
+    |> Enum.map(&Transaction.to_elixir/1)
+    |> Enum.filter(&(!is_nil(&1)))
   end
 end

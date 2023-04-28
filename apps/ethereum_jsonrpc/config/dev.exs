@@ -1,4 +1,6 @@
-use Mix.Config
+import Config
+
+config :ethereum_jsonrpc, EthereumJSONRPC.Tracer, env: "dev", disabled?: true
 
 config :logger, :ethereum_jsonrpc,
   level: :debug,

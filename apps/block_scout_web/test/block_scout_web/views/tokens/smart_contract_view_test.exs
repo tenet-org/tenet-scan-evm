@@ -1,4 +1,4 @@
-defmodule BlockScoutWeb.SmartContractViewTest do
+defmodule BlockScoutWeb.Tokens.SmartContractViewTest do
   use BlockScoutWeb.ConnCase, async: true
 
   alias BlockScoutWeb.SmartContractView
@@ -15,11 +15,83 @@ defmodule BlockScoutWeb.SmartContractViewTest do
 
       refute SmartContractView.queryable?(inputs)
     end
+
+    test "returns true if list of inputs is not empty" do
+      assert SmartContractView.queryable?([%{"name" => "argument_name", "type" => "uint256"}]) == true
+      assert SmartContractView.queryable?([]) == false
+    end
+  end
+
+  describe "writable?" do
+    test "returns true when there is write function" do
+      function = %{
+        "type" => "function",
+        "stateMutability" => "nonpayable",
+        "payable" => false,
+        "outputs" => [],
+        "name" => "upgradeTo",
+        "inputs" => [%{"type" => "uint256", "name" => "version"}, %{"type" => "address", "name" => "implementation"}],
+        "constant" => false
+      }
+
+      assert SmartContractView.writable?(function)
+    end
+
+    test "returns false when it is not a write function" do
+      function = %{
+        "type" => "function",
+        "stateMutability" => "view",
+        "payable" => false,
+        "outputs" => [%{"type" => "uint256", "name" => ""}],
+        "name" => "version",
+        "inputs" => [],
+        "constant" => true
+      }
+
+      refute SmartContractView.writable?(function)
+    end
+
+    test "returns false when there is no function" do
+      function = %{}
+
+      refute SmartContractView.writable?(function)
+    end
+
+    test "returns false when there function is nil" do
+      function = nil
+
+      refute SmartContractView.writable?(function)
+    end
+  end
+
+  describe "outputs?" do
+    test "returns true when there are outputs" do
+      outputs = [%{"name" => "_narcoId", "type" => "uint256"}]
+
+      assert SmartContractView.outputs?(outputs)
+    end
+
+    test "returns false when there are no outputs" do
+      outputs = []
+
+      refute SmartContractView.outputs?(outputs)
+    end
   end
 
   describe "address?" do
+    test "returns true if type equals `address`" do
+      assert SmartContractView.address?("address") == true
+      assert SmartContractView.address?("uint256") == false
+    end
+
     test "returns true when the type is equal to the string 'address'" do
       type = "address"
+
+      assert SmartContractView.address?(type)
+    end
+
+    test "returns true when the type is equal to the string 'address payable'" do
+      type = "address payable"
 
       assert SmartContractView.address?(type)
     end
@@ -54,20 +126,6 @@ defmodule BlockScoutWeb.SmartContractViewTest do
       arguments = nil
 
       refute SmartContractView.named_argument?(arguments)
-    end
-  end
-
-  describe "values/1" do
-    test "joins the values when it is a list" do
-      values = [8, 6, 9, 2, 2, 37]
-
-      assert SmartContractView.values(values) == "8,6,9,2,2,37"
-    end
-
-    test "returns the value" do
-      value = "POA"
-
-      assert SmartContractView.values(value) == "POA"
     end
   end
 end

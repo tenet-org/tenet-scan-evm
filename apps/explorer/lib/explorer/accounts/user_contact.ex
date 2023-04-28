@@ -6,7 +6,7 @@ defmodule Explorer.Accounts.UserContact do
   given user. Additionally, a user can only have 1 primary contact at a time.
   """
 
-  use Ecto.Schema
+  use Explorer.Schema
 
   import Ecto.Changeset
 
@@ -48,10 +48,7 @@ defmodule Explorer.Accounts.UserContact do
   end
 
   defp format_email(%Changeset{valid?: true, changes: %{email: email}} = changeset) do
-    formatted_email =
-      email
-      |> String.trim()
-      |> String.downcase()
+    formatted_email = String.trim(email)
 
     put_change(changeset, :email, formatted_email)
   end

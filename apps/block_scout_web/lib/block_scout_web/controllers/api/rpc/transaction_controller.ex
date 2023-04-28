@@ -1,7 +1,46 @@
 defmodule BlockScoutWeb.API.RPC.TransactionController do
   use BlockScoutWeb, :controller
 
+  import BlockScoutWeb.Chain, only: [paging_options: 1, next_page_params: 3, split_list_by_page: 1]
+
   alias Explorer.Chain
+  alias Explorer.Chain.Transaction
+
+  @api_true [api?: true]
+
+  def gettxinfo(conn, params) do
+    with {:txhash_param, {:ok, txhash_param}} <- fetch_txhash(params),
+         {:format, {:ok, transaction_hash}} <- to_transaction_hash(txhash_param),
+         {:transaction, {:ok, %Transaction{revert_reason: revert_reason, error: error} = transaction}} <-
+           transaction_from_hash(transaction_hash),
+         paging_options <- paging_options(params) do
+      logs = Chain.transaction_to_logs(transaction_hash, Keyword.merge(paging_options, @api_true))
+      {logs, next_page} = split_list_by_page(logs)
+
+      transaction_updated =
+        if (error == "Reverted" || error == "execution reverted") && !revert_reason do
+          %Transaction{transaction | revert_reason: Chain.fetch_tx_revert_reason(transaction)}
+        else
+          transaction
+        end
+
+      render(conn, :gettxinfo, %{
+        transaction: transaction_updated,
+        block_height: Chain.block_height(),
+        logs: logs,
+        next_page_params: next_page_params(next_page, logs, params)
+      })
+    else
+      {:transaction, :error} ->
+        render(conn, :error, error: "Transaction not found")
+
+      {:txhash_param, :error} ->
+        render(conn, :error, error: "Query parameter txhash is required")
+
+      {:format, :error} ->
+        render(conn, :error, error: "Invalid txhash format")
+    end
+  end
 
   def gettxreceiptstatus(conn, params) do
     with {:txhash_param, {:ok, txhash_param}} <- fetch_txhash(params),
@@ -33,6 +72,13 @@ defmodule BlockScoutWeb.API.RPC.TransactionController do
 
   defp fetch_txhash(params) do
     {:txhash_param, Map.fetch(params, "txhash")}
+  end
+
+  defp transaction_from_hash(transaction_hash) do
+    case Chain.hash_to_transaction(transaction_hash, necessity_by_association: %{block: :required}) do
+      {:error, :not_found} -> {:transaction, :error}
+      {:ok, transaction} -> {:transaction, {:ok, transaction}}
+    end
   end
 
   defp to_transaction_hash(transaction_hash_string) do

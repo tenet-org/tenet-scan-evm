@@ -6,15 +6,19 @@ defmodule Explorer.Chain.ImportTest do
   alias Explorer.Chain.{
     Address,
     Address.TokenBalance,
+    Address.CurrentTokenBalance,
     Block,
     Data,
     Log,
     Hash,
     Import,
+    PendingBlockOperation,
     Token,
     TokenTransfer,
     Transaction
   }
+
+  alias Explorer.Chain.Events.Subscriber
 
   @moduletag :capturelog
 
@@ -46,37 +50,45 @@ defmodule Explorer.Chain.ImportTest do
       internal_transactions: %{
         params: [
           %{
+            block_number: 37,
+            transaction_index: 0,
+            transaction_hash: "0x53bd884872de3e488692881baeec262e7b95234d3965248c39fe992fffd433e5",
+            index: 0,
+            trace_address: [],
+            type: "call",
             call_type: "call",
             from_address_hash: "0xe8ddc5c7a2d2f0d7a9798459c0104fdf5e987aca",
+            to_address_hash: "0x8bf38d4764929064f2d4d3a56520a76ab3df415b",
             gas: 4_677_320,
             gas_used: 27770,
-            index: 0,
+            input: "0x10855269000000000000000000000000862d67cb0773ee3f8ce7ea89b328ffea861ab3ef",
             output: "0x",
-            to_address_hash: "0x8bf38d4764929064f2d4d3a56520a76ab3df415b",
-            trace_address: [],
-            transaction_hash: "0x53bd884872de3e488692881baeec262e7b95234d3965248c39fe992fffd433e5",
-            type: "call",
             value: 0
           },
           %{
+            block_number: 37,
+            transaction_index: 1,
+            transaction_hash: "0x53bd884872de3e488692881baeec262e7b95234d3965248c39fe992fffd433e5",
+            index: 1,
+            trace_address: [0],
+            type: "call",
             call_type: "call",
             from_address_hash: "0xe8ddc5c7a2d2f0d7a9798459c0104fdf5e987aca",
+            to_address_hash: "0x8bf38d4764929064f2d4d3a56520a76ab3df415b",
             gas: 4_677_320,
             gas_used: 27770,
-            index: 1,
+            input: "0x10855269000000000000000000000000862d67cb0773ee3f8ce7ea89b328ffea861ab3ef",
             output: "0x",
-            to_address_hash: "0x8bf38d4764929064f2d4d3a56520a76ab3df415b",
-            trace_address: [],
-            transaction_hash: "0x53bd884872de3e488692881baeec262e7b95234d3965248c39fe992fffd433e5",
-            type: "call",
             value: 0
           }
         ],
-        timeout: 5
+        timeout: 5,
+        with: :blockless_changeset
       },
       logs: %{
         params: [
           %{
+            block_hash: "0xf6b4b8c88df3ebd252ec476328334dc026cf66606a84fb769b3d3cbccc8471bd",
             address_hash: "0x8bf38d4764929064f2d4d3a56520a76ab3df415b",
             data: "0x0000000000000000000000000000000000000000000000000de0b6b3a7640000",
             first_topic: "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef",
@@ -91,7 +103,6 @@ defmodule Explorer.Chain.ImportTest do
         timeout: 5
       },
       transactions: %{
-        on_conflict: :replace_all,
         params: [
           %{
             block_hash: "0xf6b4b8c88df3ebd252ec476328334dc026cf66606a84fb769b3d3cbccc8471bd",
@@ -141,6 +152,7 @@ defmodule Explorer.Chain.ImportTest do
           %{
             amount: Decimal.new(1_000_000_000_000_000_000),
             block_number: 37,
+            block_hash: "0xf6b4b8c88df3ebd252ec476328334dc026cf66606a84fb769b3d3cbccc8471bd",
             log_index: 0,
             from_address_hash: "0xe8ddc5c7a2d2f0d7a9798459c0104fdf5e987aca",
             to_address_hash: "0x515c09c5bba1ed566b02a5b0599ec5d5d0aee73d",
@@ -241,15 +253,6 @@ defmodule Explorer.Chain.ImportTest do
                 ],
                 internal_transactions: [
                   %{
-                    index: 0,
-                    transaction_hash: %Hash{
-                      byte_count: 32,
-                      bytes:
-                        <<83, 189, 136, 72, 114, 222, 62, 72, 134, 146, 136, 27, 174, 236, 38, 46, 123, 149, 35, 77, 57,
-                          101, 36, 140, 57, 254, 153, 47, 255, 212, 51, 229>>
-                    }
-                  },
-                  %{
                     index: 1,
                     transaction_hash: %Hash{
                       byte_count: 32,
@@ -289,11 +292,15 @@ defmodule Explorer.Chain.ImportTest do
                   }
                 ],
                 transactions: [
-                  %Hash{
-                    byte_count: 32,
-                    bytes:
-                      <<83, 189, 136, 72, 114, 222, 62, 72, 134, 146, 136, 27, 174, 236, 38, 46, 123, 149, 35, 77, 57,
-                        101, 36, 140, 57, 254, 153, 47, 255, 212, 51, 229>>
+                  %Transaction{
+                    block_number: 37,
+                    index: 0,
+                    hash: %Hash{
+                      byte_count: 32,
+                      bytes:
+                        <<83, 189, 136, 72, 114, 222, 62, 72, 134, 146, 136, 27, 174, 236, 38, 46, 123, 149, 35, 77, 57,
+                          101, 36, 140, 57, 254, 153, 47, 255, 212, 51, 229>>
+                    }
                   }
                 ],
                 tokens: [
@@ -368,17 +375,20 @@ defmodule Explorer.Chain.ImportTest do
             %{
               address_hash: "0xe8ddc5c7a2d2f0d7a9798459c0104fdf5e987aca",
               token_contract_address_hash: "0x8bf38d4764929064f2d4d3a56520a76ab3df415b",
-              block_number: "37"
+              block_number: "37",
+              token_type: "ERC-20"
             },
             %{
               address_hash: "0x515c09c5bba1ed566b02a5b0599ec5d5d0aee73d",
               token_contract_address_hash: "0x8bf38d4764929064f2d4d3a56520a76ab3df415b",
-              block_number: "37"
+              block_number: "37",
+              token_type: "ERC-20"
             },
             %{
               address_hash: "0x8bf38d4764929064f2d4d3a56520a76ab3df415b",
               token_contract_address_hash: "0x8bf38d4764929064f2d4d3a56520a76ab3df415b",
-              block_number: "37"
+              block_number: "37",
+              token_type: "ERC-20"
             }
           ],
           timeout: 5
@@ -392,14 +402,59 @@ defmodule Explorer.Chain.ImportTest do
       assert 3 == count
     end
 
-    test "with empty map" do
-      assert {:ok, %{}} == Import.all(%{})
+    test "inserts a current_token_balance" do
+      params = %{
+        addresses: %{
+          params: [
+            %{hash: "0xe8ddc5c7a2d2f0d7a9798459c0104fdf5e987aca"},
+            %{hash: "0x515c09c5bba1ed566b02a5b0599ec5d5d0aee73d"},
+            %{hash: "0x8bf38d4764929064f2d4d3a56520a76ab3df415b"}
+          ],
+          timeout: 5
+        },
+        tokens: %{
+          on_conflict: :nothing,
+          params: [
+            %{
+              contract_address_hash: "0x8bf38d4764929064f2d4d3a56520a76ab3df415b",
+              type: "ERC-20"
+            }
+          ],
+          timeout: 5
+        },
+        address_current_token_balances: %{
+          params: [
+            %{
+              address_hash: "0xe8ddc5c7a2d2f0d7a9798459c0104fdf5e987aca",
+              token_contract_address_hash: "0x8bf38d4764929064f2d4d3a56520a76ab3df415b",
+              block_number: "37",
+              value: 200,
+              token_type: "ERC-20"
+            },
+            %{
+              address_hash: "0x515c09c5bba1ed566b02a5b0599ec5d5d0aee73d",
+              token_contract_address_hash: "0x8bf38d4764929064f2d4d3a56520a76ab3df415b",
+              block_number: "37",
+              value: 100,
+              token_type: "ERC-20"
+            }
+          ],
+          timeout: 5
+        }
+      }
+
+      Import.all(params)
+
+      count =
+        CurrentTokenBalance
+        |> Explorer.Repo.all()
+        |> Enum.count()
+
+      assert count == 2
     end
 
-    test "publishes data to subscribers on insert" do
-      Chain.subscribe_to_events(:logs)
-      Import.all(@import_data)
-      assert_received {:chain_event, :logs, :realtime, [%Log{}]}
+    test "with empty map" do
+      assert {:ok, %{}} == Import.all(%{})
     end
 
     test "with invalid data" do
@@ -411,49 +466,44 @@ defmodule Explorer.Chain.ImportTest do
     end
 
     test "publishes addresses with updated fetched_coin_balance data to subscribers on insert" do
-      Chain.subscribe_to_events(:addresses)
+      Subscriber.to(:addresses, :realtime)
       Import.all(@import_data)
-      assert_received {:chain_event, :addresses, :realtime, [%Address{}, %Address{}, %Address{}]}
+      assert_receive {:chain_event, :addresses, :realtime, [%Address{}, %Address{}, %Address{}]}
     end
 
     test "publishes block data to subscribers on insert" do
-      Chain.subscribe_to_events(:blocks)
+      Subscriber.to(:blocks, :realtime)
       Import.all(@import_data)
-      assert_received {:chain_event, :blocks, :realtime, [%Block{}]}
+      assert_receive {:chain_event, :blocks, :realtime, [%Block{}]}
     end
 
     test "publishes internal_transaction data to subscribers on insert" do
-      Chain.subscribe_to_events(:internal_transactions)
+      Subscriber.to(:internal_transactions, :realtime)
       Import.all(@import_data)
-      assert_received {:chain_event, :internal_transactions, :realtime, [%{id: _}, %{id: _}]}
+
+      assert_receive {:chain_event, :internal_transactions, :realtime, [%{transaction_hash: _, index: _}]}
     end
 
-    test "publishes log data to subscribers on insert" do
-      Chain.subscribe_to_events(:logs)
+    test "publishes transactions data to subscribers on insert" do
+      Subscriber.to(:transactions, :realtime)
       Import.all(@import_data)
-      assert_received {:chain_event, :logs, :realtime, [%Log{}]}
-    end
-
-    test "publishes transaction hashes data to subscribers on insert" do
-      Chain.subscribe_to_events(:transactions)
-      Import.all(@import_data)
-      assert_received {:chain_event, :transactions, :realtime, [%Hash{}]}
+      assert_receive {:chain_event, :transactions, :realtime, [%Transaction{}]}
     end
 
     test "publishes token_transfers data to subscribers on insert" do
-      Chain.subscribe_to_events(:token_transfers)
+      Subscriber.to(:token_transfers, :realtime)
 
       Import.all(@import_data)
 
-      assert_received {:chain_event, :token_transfers, :realtime, [%TokenTransfer{}]}
+      assert_receive {:chain_event, :token_transfers, :realtime, [%TokenTransfer{}]}
     end
 
     test "does not broadcast if broadcast option is false" do
       non_broadcast_data = Map.merge(@import_data, %{broadcast: false})
 
-      Chain.subscribe_to_events(:logs)
+      Subscriber.to(:addresses, :realtime)
       Import.all(non_broadcast_data)
-      refute_received {:chain_event, :logs, :realtime, [%Log{}]}
+      refute_received {:chain_event, :addresses, :realtime, [%Address{}]}
     end
 
     test "updates address with contract code" do
@@ -466,7 +516,7 @@ defmodule Explorer.Chain.ImportTest do
       from_address_hash = "0x8cc2e4b51b4340cb3727cffe3f1878756e732cee"
       from_address = insert(:address, hash: from_address_hash)
 
-      block = insert(:block)
+      block = insert(:block, number: 37)
 
       transaction_string_hash = "0x0705ea0a5b997d9aafd5c531e016d9aabe3297a28c0bd4ef005fe6ea329d301b"
 
@@ -497,9 +547,12 @@ defmodule Explorer.Chain.ImportTest do
               trace_address: [],
               transaction_hash: transaction_string_hash,
               type: "create",
-              value: 0
+              value: 0,
+              block_number: 37,
+              transaction_index: 0
             }
-          ]
+          ],
+          with: :blockless_changeset
         }
       }
 
@@ -510,7 +563,7 @@ defmodule Explorer.Chain.ImportTest do
       assert address.contract_code != smart_contract_bytecode
     end
 
-    test "with internal_transactions updates Transaction internal_transactions_indexed_at" do
+    test "with internal_transactions updates PendingBlockOperation status" do
       block_hash = "0xe52d77084cab13a4e724162bcd8c6028e5ecfaa04d091ee476e96b9958ed6b47"
       block_number = 34
       miner_hash = from_address_hash = "0xe8ddc5c7a2d2f0d7a9798459c0104fdf5e987aca"
@@ -554,6 +607,98 @@ defmodule Explorer.Chain.ImportTest do
               gas_used: 269_607,
               hash: transaction_hash,
               index: 0,
+              input:
+                "0x6060604052341561000f57600080fd5b7fb94ae47ec9f4248692e2ecf9740b67ab493f3dcc8452bedc7d9cd911c28d1ca5426040518082815260200191505060405180910390a1609e806100546000396000f300606060405260043610603f576000357c0100000000000000000000000000000000000000000000000000000000900463ffffffff168063557ed1ba146044575b600080fd5b3415604e57600080fd5b6054606a565b6040518082815260200191505060405180910390f35b6000429050905600a165627a7a7230582053883c0c39da080adc15a91094921659c200b3bb60aed9e49b79b0274da3f4010029",
+              nonce: 0,
+              r: 0,
+              s: 0,
+              status: :ok,
+              v: 0,
+              value: 0
+            }
+          ]
+        }
+      }
+
+      internal_txs_options = %{
+        internal_transactions: %{
+          params: [
+            %{
+              block_number: block_number,
+              transaction_index: 0,
+              transaction_hash: transaction_hash,
+              index: 0,
+              trace_address: [],
+              type: "call",
+              call_type: "call",
+              from_address_hash: from_address_hash,
+              to_address_hash: to_address_hash,
+              gas: 4_677_320,
+              gas_used: 27770,
+              input:
+                "0x6060604052341561000f57600080fd5b7fb94ae47ec9f4248692e2ecf9740b67ab493f3dcc8452bedc7d9cd911c28d1ca5426040518082815260200191505060405180910390a1609e806100546000396000f300606060405260043610603f576000357c0100000000000000000000000000000000000000000000000000000000900463ffffffff168063557ed1ba146044575b600080fd5b3415604e57600080fd5b6054606a565b6040518082815260200191505060405180910390f35b6000429050905600a165627a7a7230582053883c0c39da080adc15a91094921659c200b3bb60aed9e49b79b0274da3f4010029",
+              output: "0x",
+              value: 0
+            }
+          ],
+          with: :blockless_changeset
+        }
+      }
+
+      assert {:ok, _} = Import.all(options)
+
+      {:ok, block_hash_casted} = Explorer.Chain.Hash.Full.cast(block_hash)
+      assert [^block_hash_casted] = Explorer.Repo.all(PendingBlockOperation.block_hashes())
+
+      assert {:ok, _} = Import.all(internal_txs_options)
+
+      assert [] == Explorer.Repo.all(PendingBlockOperation.block_hashes())
+    end
+
+    test "blocks with simple coin transfers updates PendingBlockOperation status" do
+      block_hash = "0xe69314b702f403e00ec89cd63d5870182ed334d9d461bd042cdd6609fd6b7c17"
+      block_number = 13_255_416
+      miner_hash = from_address_hash = "0xe2ac1c6843A33f81aE4935E5EF1277a392990381"
+      to_address_hash = "0xDC1772b72d828ea9b7D4ded22dbef0f082578B8B"
+      transaction_hash = "0x8f20a5b3b79199db857323af7a5077d2dae7867368fef6f4e8cd8b14b88a9c6a"
+
+      options = %{
+        addresses: %{
+          params: [
+            %{hash: from_address_hash},
+            %{hash: to_address_hash}
+          ]
+        },
+        blocks: %{
+          params: [
+            %{
+              consensus: true,
+              difficulty: 340_282_366_920_938_463_463_374_607_400_000_000_000,
+              gas_limit: 9_999_991,
+              gas_used: 21_000,
+              hash: block_hash,
+              miner_hash: miner_hash,
+              nonce: 0,
+              number: block_number,
+              parent_hash: "0x4c4505527d99e07dbcd6274ffaac629099ae6d4e1f2bc2bd3cc48d3f5a511d6f",
+              size: 703,
+              timestamp: Timex.parse!("2020-02-12 10:48:21Z", "{ISO:Extended:Z}"),
+              total_difficulty: 4_510_584_331_001_678_443_607_831_185_000_000_000_000_000_000
+            }
+          ]
+        },
+        transactions: %{
+          params: [
+            %{
+              block_hash: block_hash,
+              block_number: block_number,
+              cumulative_gas_used: 21_000,
+              from_address_hash: from_address_hash,
+              gas: 21_000,
+              gas_price: 1,
+              gas_used: 21_000,
+              hash: transaction_hash,
+              index: 0,
               input: "0x",
               nonce: 0,
               r: 0,
@@ -562,36 +707,42 @@ defmodule Explorer.Chain.ImportTest do
               v: 0,
               value: 0
             }
-          ],
-          on_conflict: :replace_all
-        },
-        internal_transactions: %{
-          params: [
-            %{
-              block_number: 35,
-              call_type: "call",
-              from_address_hash: from_address_hash,
-              gas: 4_677_320,
-              gas_used: 27770,
-              index: 0,
-              output: "0x",
-              to_address_hash: to_address_hash,
-              trace_address: [],
-              transaction_hash: transaction_hash,
-              type: "call",
-              value: 0
-            }
           ]
         }
       }
 
-      refute Enum.any?(options[:transactions][:params], &Map.has_key?(&1, :internal_transactions_indexed_at))
+      internal_txs_options = %{
+        internal_transactions: %{
+          params: [
+            %{
+              block_number: block_number,
+              transaction_index: 0,
+              transaction_hash: transaction_hash,
+              index: 0,
+              trace_address: [],
+              type: "call",
+              call_type: "call",
+              from_address_hash: from_address_hash,
+              to_address_hash: to_address_hash,
+              gas: 21_000,
+              gas_used: 21000,
+              input: "0x",
+              output: "0x",
+              value: 0
+            }
+          ],
+          with: :blockless_changeset
+        }
+      }
 
       assert {:ok, _} = Import.all(options)
 
-      transaction = Explorer.Repo.get(Transaction, transaction_hash)
+      {:ok, block_hash_casted} = Explorer.Chain.Hash.Full.cast(block_hash)
+      assert [^block_hash_casted] = Explorer.Repo.all(PendingBlockOperation.block_hashes())
 
-      refute transaction.internal_transactions_indexed_at == nil
+      assert {:ok, _} = Import.all(internal_txs_options)
+
+      assert [] == Explorer.Repo.all(PendingBlockOperation.block_hashes())
     end
 
     test "when the transaction has no to_address and an internal transaction with type create it populates the denormalized created_contract_address_hash" do
@@ -652,13 +803,12 @@ defmodule Explorer.Chain.ImportTest do
               v: 0,
               value: 0
             }
-          ],
-          on_conflict: :replace_all
+          ]
         },
         internal_transactions: %{
           params: [
             %{
-              block_number: 35,
+              block_number: block_number,
               call_type: "call",
               created_contract_code: smart_contract_bytecode,
               created_contract_address_hash: created_contract_address_hash,
@@ -672,9 +822,11 @@ defmodule Explorer.Chain.ImportTest do
               trace_address: [],
               transaction_hash: transaction_hash,
               type: "create",
-              value: 0
+              value: 0,
+              transaction_index: 0
             }
-          ]
+          ],
+          with: :blockless_changeset
         }
       }
 
@@ -684,101 +836,6 @@ defmodule Explorer.Chain.ImportTest do
 
       assert {:ok, transaction.created_contract_address_hash} ==
                Chain.string_to_address_hash(created_contract_address_hash)
-    end
-
-    test "when the transaction has a to_address and an internal transaction with type create it does not populates the denormalized created_contract_address_hash" do
-      smart_contract_bytecode =
-        "0x608060405234801561001057600080fd5b5060df8061001f6000396000f3006080604052600436106049576000357c0100000000000000000000000000000000000000000000000000000000900463ffffffff16806360fe47b114604e5780636d4ce63c146078575b600080fd5b348015605957600080fd5b5060766004803603810190808035906020019092919050505060a0565b005b348015608357600080fd5b50608a60aa565b6040518082815260200191505060405180910390f35b8060008190555050565b600080549050905600a165627a7a7230582040d82a7379b1ee1632ad4d8a239954fd940277b25628ead95259a85c5eddb2120029"
-
-      block_hash = "0xe52d77084cab13a4e724162bcd8c6028e5ecfaa04d091ee476e96b9958ed6b47"
-      block_number = 34
-      miner_hash = from_address_hash = "0xe8ddc5c7a2d2f0d7a9798459c0104fdf5e987aca"
-      to_address_hash = "0xf7ddc5c7a2d2f0d7a9798459c0104fdf5e9a7bbb"
-      created_contract_address_hash = "0x8bf38d4764929064f2d4d3a56520a76ab3df415b"
-      transaction_hash = "0x3a3eb134e6792ce9403ea4188e5e79693de9e4c94e499db132be086400da79e6"
-
-      options = %{
-        addresses: %{
-          params: [
-            %{hash: from_address_hash},
-            %{
-              contract_code: smart_contract_bytecode,
-              hash: created_contract_address_hash
-            },
-            %{hash: to_address_hash}
-          ]
-        },
-        blocks: %{
-          params: [
-            %{
-              consensus: true,
-              difficulty: 340_282_366_920_938_463_463_374_607_431_768_211_454,
-              gas_limit: 6_926_030,
-              gas_used: 269_607,
-              hash: block_hash,
-              miner_hash: miner_hash,
-              nonce: 0,
-              number: block_number,
-              parent_hash: "0x106d528393159b93218dd410e2a778f083538098e46f1a44902aa67a164aed0b",
-              size: 1493,
-              timestamp: Timex.parse!("2017-12-15T21:06:15Z", "{ISO:Extended:Z}"),
-              total_difficulty: 11_569_600_475_311_907_757_754_736_652_679_816_646_147
-            }
-          ]
-        },
-        transactions: %{
-          params: [
-            %{
-              block_hash: block_hash,
-              block_number: block_number,
-              cumulative_gas_used: 269_607,
-              from_address_hash: from_address_hash,
-              gas: 269_607,
-              gas_price: 1,
-              gas_used: 269_607,
-              hash: transaction_hash,
-              index: 0,
-              input: "0x",
-              nonce: 0,
-              r: 0,
-              s: 0,
-              status: :ok,
-              to_address_hash: to_address_hash,
-              v: 0,
-              value: 0
-            }
-          ],
-          on_conflict: :replace_all
-        },
-        internal_transactions: %{
-          params: [
-            %{
-              block_number: 35,
-              call_type: "call",
-              created_contract_code: smart_contract_bytecode,
-              created_contract_address_hash: created_contract_address_hash,
-              from_address_hash: from_address_hash,
-              gas: 4_677_320,
-              gas_used: 27770,
-              index: 0,
-              init:
-                "0x6060604052341561000c57fe5b5b6101a68061001c6000396000f300606060405263ffffffff7c01000000000000000000000000000000000000000000000000000000006000350416631d3b9edf811461005b57806366098d4f1461007b578063a12f69e01461009b578063f4f3bdc1146100bb575bfe5b6100696004356024356100db565b60408051918252519081900360200190f35b61006960043560243561010a565b60408051918252519081900360200190f35b610069600435602435610124565b60408051918252519081900360200190f35b610069600435602435610163565b60408051918252519081900360200190f35b60008282028315806100f757508284828115156100f457fe5b04145b15156100ff57fe5b8091505b5092915050565b6000828201838110156100ff57fe5b8091505b5092915050565b60008080831161013057fe5b828481151561013b57fe5b049050828481151561014957fe5b0681840201841415156100ff57fe5b8091505b5092915050565b60008282111561016f57fe5b508082035b929150505600a165627a7a7230582020c944d8375ca14e2c92b14df53c2d044cb99dc30c3ba9f55e2bcde87bd4709b0029",
-              output: "0x",
-              to_address_hash: to_address_hash,
-              trace_address: [],
-              transaction_hash: transaction_hash,
-              type: "create",
-              value: 0
-            }
-          ]
-        }
-      }
-
-      assert {:ok, _} = Import.all(options)
-
-      transaction = Explorer.Repo.get(Transaction, transaction_hash)
-
-      assert transaction.created_contract_address_hash == nil
     end
 
     test "import balances" do
@@ -794,10 +851,8 @@ defmodule Explorer.Chain.ImportTest do
                })
     end
 
-    test "transactions with multiple create internal transactions return error" do
-      assert {:error, :internal_transactions_indexed_at_transactions,
-              %{exception: %Postgrex.Error{postgres: %{code: :cardinality_violation}}, transaction_hashes: [_]},
-              _} =
+    test "transactions with multiple create uses first internal transaction's created contract address hash" do
+      assert {:ok, _} =
                Import.all(%{
                  blocks: %{
                    params: [
@@ -819,7 +874,6 @@ defmodule Explorer.Chain.ImportTest do
                    timeout: 5
                  },
                  transactions: %{
-                   on_conflict: :replace_all,
                    params: [
                      %{
                        block_hash: "0xf6b4b8c88df3ebd252ec476328334dc026cf66606a84fb769b3d3cbccc8471bd",
@@ -860,7 +914,9 @@ defmodule Explorer.Chain.ImportTest do
                        trace_address: [],
                        transaction_hash: "0x53bd884872de3e488692881baeec262e7b95234d3965248c39fe992fffd433e5",
                        type: "create",
-                       value: 0
+                       value: 0,
+                       block_number: 37,
+                       transaction_index: 0
                      },
                      %{
                        created_contract_address_hash: "0xffc87239eb0267bc3ca2cd51d12fbf278e02ccb5",
@@ -875,10 +931,13 @@ defmodule Explorer.Chain.ImportTest do
                        trace_address: [],
                        transaction_hash: "0x53bd884872de3e488692881baeec262e7b95234d3965248c39fe992fffd433e5",
                        type: "create",
-                       value: 0
+                       value: 0,
+                       block_number: 37,
+                       transaction_index: 1
                      }
                    ],
-                   timeout: 5
+                   timeout: 5,
+                   with: :blockless_changeset
                  },
                  addresses: %{
                    params: [
@@ -890,6 +949,11 @@ defmodule Explorer.Chain.ImportTest do
                    timeout: 5
                  }
                })
+
+      assert %Transaction{created_contract_address_hash: created_contract_address_hash} =
+               Repo.get(Transaction, "0x53bd884872de3e488692881baeec262e7b95234d3965248c39fe992fffd433e5")
+
+      assert to_string(created_contract_address_hash) == "0xffc87239eb0267bc3ca2cd51d12fbf278e02ccb4"
     end
 
     test "updates transaction error and status from internal transactions when status is not set from (pre-Byzantium/Ethereum Classic) receipts" do
@@ -957,7 +1021,6 @@ defmodule Explorer.Chain.ImportTest do
                  },
                  broadcast: false,
                  transactions: %{
-                   on_conflict: :replace_all,
                    params: [
                      %{
                        block_hash: "0x1f8cde8bd326702c49e065d56b08bdc82caa0c4820d914e27026c9c68ca1cf09",
@@ -1040,7 +1103,9 @@ defmodule Explorer.Chain.ImportTest do
                        trace_address: [],
                        transaction_hash: "0x1a263224a95275d77bc30a7e131bc64d948777946a790c0915ab293791fbcb61",
                        type: "create",
-                       value: 0
+                       value: 0,
+                       transaction_index: 0,
+                       transaction_block_number: 35
                      },
                      %{
                        block_number: 6_546_180,
@@ -1052,9 +1117,12 @@ defmodule Explorer.Chain.ImportTest do
                        trace_address: [],
                        transaction_hash: "0xab349efbe1ddc6d85d84a993aa52bdaadce66e8ee166dd10013ce3f2a94ca724",
                        type: "create",
-                       value: 0
+                       value: 0,
+                       transaction_index: 0,
+                       transaction_block_number: 35
                      }
-                   ]
+                   ],
+                   with: :blockless_changeset
                  }
                })
 
@@ -1113,8 +1181,7 @@ defmodule Explorer.Chain.ImportTest do
                        v: 0,
                        value: 0
                      }
-                   ],
-                   on_conflict: :replace_all
+                   ]
                  },
                  transaction_forks: %{
                    params: [
@@ -1303,8 +1370,7 @@ defmodule Explorer.Chain.ImportTest do
                        value: 0,
                        status: :ok
                      }
-                   ],
-                   on_conflict: :replace_all
+                   ]
                  }
                })
 
@@ -1416,8 +1482,7 @@ defmodule Explorer.Chain.ImportTest do
                        value: 0,
                        status: :ok
                      }
-                   ],
-                   on_conflict: :replace_all
+                   ]
                  }
                })
 
@@ -1506,8 +1571,8 @@ defmodule Explorer.Chain.ImportTest do
                  },
                  address_coin_balances: %{
                    params: [
-                     %{address_hash: miner_hash, block_number: block_number, value: nil},
-                     %{address_hash: uncle_miner_hash, block_number: block_number, value: nil}
+                     %{address_hash: miner_hash, block_number: block_number, value: nil, token_type: "ERC-20"},
+                     %{address_hash: uncle_miner_hash, block_number: block_number, value: nil, token_type: "ERC-20"}
                    ],
                    timeout: 1
                  },
@@ -1524,7 +1589,7 @@ defmodule Explorer.Chain.ImportTest do
                    timeout: 1
                  },
                  block_second_degree_relations: %{
-                   params: [%{nephew_hash: block_hash, uncle_hash: uncle_hash}],
+                   params: [%{nephew_hash: block_hash, uncle_hash: uncle_hash, index: 0}],
                    timeout: 1
                  },
                  internal_transactions: %{
@@ -1533,18 +1598,30 @@ defmodule Explorer.Chain.ImportTest do
                        transaction_hash: transaction_hash,
                        index: 0,
                        from_address_hash: from_address_hash,
-                       to_address_hash: to_address_hash
+                       to_address_hash: to_address_hash,
+                       block_number: block_number,
+                       transaction_index: 0
+                     )
+                   ],
+                   timeout: 1,
+                   with: :blockless_changeset
+                 },
+                 logs: %{
+                   params: [
+                     params_for(:log,
+                       transaction_hash: transaction_hash,
+                       address_hash: miner_hash,
+                       block_hash: block_hash
                      )
                    ],
                    timeout: 1
                  },
-                 logs: %{
-                   params: [params_for(:log, transaction_hash: transaction_hash, address_hash: miner_hash)],
-                   timeout: 1
-                 },
                  token_transfers: %{
                    params: [
-                     params_for(:token_transfer,
+                     params_for(
+                       :token_transfer,
+                       block_hash: block_hash,
+                       block_number: 35,
                        from_address_hash: from_address_hash,
                        to_address_hash: to_address_hash,
                        token_contract_address_hash: token_contract_address_hash,
@@ -1555,7 +1632,6 @@ defmodule Explorer.Chain.ImportTest do
                  },
                  tokens: %{
                    params: [params_for(:token, contract_address_hash: token_contract_address_hash)],
-                   on_conflict: :replace_all,
                    timeout: 1
                  },
                  transactions: %{
@@ -1571,7 +1647,6 @@ defmodule Explorer.Chain.ImportTest do
                        cumulative_gas_used: 0
                      )
                    ],
-                   on_conflict: :replace_all,
                    timeout: 1
                  },
                  transaction_forks: %{
@@ -1722,7 +1797,7 @@ defmodule Explorer.Chain.ImportTest do
     end
 
     # https://github.com/poanetwork/blockscout/issues/868 regression test
-    test "errored transactions can be forked" do
+    test "errored simple coin transfer can be forked" do
       block_number = 0
 
       miner_hash_before = address_hash()
@@ -1767,7 +1842,6 @@ defmodule Explorer.Chain.ImportTest do
                        block_hash: block_hash_before,
                        block_number: block_number,
                        error: error,
-                       internal_transactions_indexed_at: Timex.parse!("2019-01-01T01:00:00Z", "{ISO:Extended:Z}"),
                        from_address_hash: from_address_hash_before,
                        to_address_hash: to_address_hash_before,
                        gas: 21_000,
@@ -1783,23 +1857,6 @@ defmodule Explorer.Chain.ImportTest do
                        v: 0,
                        value: 0,
                        status: :error
-                     }
-                   ],
-                   on_conflict: :replace_all
-                 },
-                 internal_transactions: %{
-                   params: [
-                     %{
-                       transaction_hash: transaction_hash,
-                       index: 0,
-                       type: :call,
-                       call_type: :call,
-                       gas: 0,
-                       from_address_hash: from_address_hash_before,
-                       to_address_hash: to_address_hash_before,
-                       trace_address: [],
-                       value: 0,
-                       error: error
                      }
                    ]
                  }
@@ -1856,6 +1913,398 @@ defmodule Explorer.Chain.ImportTest do
       assert transaction_after.index == nil
       assert transaction_after.error == nil
       assert transaction_after.status == nil
+    end
+
+    # https://github.com/poanetwork/blockscout/issues/868 regression test
+    test "errored other transactions can be forked" do
+      block_number = 0
+
+      miner_hash_before = address_hash()
+      from_address_hash_before = address_hash()
+      to_address_hash_before = address_hash()
+      block_hash_before = block_hash()
+      index_before = 0
+      error = "Reverted"
+
+      transaction_hash = transaction_hash()
+
+      assert {:ok, _} =
+               Import.all(%{
+                 addresses: %{
+                   params: [
+                     %{hash: miner_hash_before},
+                     %{hash: from_address_hash_before},
+                     %{hash: to_address_hash_before}
+                   ]
+                 },
+                 blocks: %{
+                   params: [
+                     %{
+                       consensus: true,
+                       difficulty: 0,
+                       gas_limit: 0,
+                       gas_used: 0,
+                       hash: block_hash_before,
+                       miner_hash: miner_hash_before,
+                       nonce: 0,
+                       number: block_number,
+                       parent_hash: block_hash(),
+                       size: 0,
+                       timestamp: Timex.parse!("2019-01-01T01:00:00Z", "{ISO:Extended:Z}"),
+                       total_difficulty: 0
+                     }
+                   ]
+                 },
+                 transactions: %{
+                   params: [
+                     %{
+                       block_hash: block_hash_before,
+                       block_number: block_number,
+                       error: error,
+                       from_address_hash: from_address_hash_before,
+                       to_address_hash: to_address_hash_before,
+                       gas: 666_000,
+                       gas_price: 1,
+                       gas_used: 555_000,
+                       cumulative_gas_used: 555_000,
+                       hash: transaction_hash,
+                       index: index_before,
+                       input: "0x0102",
+                       nonce: 0,
+                       r: 0,
+                       s: 0,
+                       v: 0,
+                       value: 0,
+                       status: :error
+                     }
+                   ]
+                 },
+                 internal_transactions: %{
+                   params: [
+                     %{
+                       transaction_hash: transaction_hash,
+                       index: 0,
+                       type: :call,
+                       call_type: :call,
+                       gas: 0,
+                       from_address_hash: from_address_hash_before,
+                       to_address_hash: to_address_hash_before,
+                       trace_address: [],
+                       value: 0,
+                       input: "0x0102",
+                       error: error,
+                       block_number: block_number,
+                       transaction_index: 0
+                     }
+                   ],
+                   with: :blockless_changeset
+                 }
+               })
+
+      %Block{consensus: true, number: ^block_number} = Repo.get(Block, block_hash_before)
+      transaction_before = Repo.get!(Transaction, transaction_hash)
+
+      refute transaction_before.block_hash == nil
+      refute transaction_before.block_number == nil
+      refute transaction_before.gas_used == nil
+      refute transaction_before.cumulative_gas_used == nil
+      refute transaction_before.index == nil
+      refute transaction_before.status == nil
+
+      miner_hash_after = address_hash()
+      from_address_hash_after = address_hash()
+      block_hash_after = block_hash()
+
+      assert {:ok, _} =
+               Import.all(%{
+                 addresses: %{
+                   params: [
+                     %{hash: miner_hash_after},
+                     %{hash: from_address_hash_after}
+                   ]
+                 },
+                 blocks: %{
+                   params: [
+                     %{
+                       consensus: true,
+                       difficulty: 1,
+                       gas_limit: 1,
+                       gas_used: 1,
+                       hash: block_hash_after,
+                       miner_hash: miner_hash_after,
+                       nonce: 1,
+                       number: block_number,
+                       parent_hash: block_hash(),
+                       size: 1,
+                       timestamp: Timex.parse!("2019-01-01T02:00:00Z", "{ISO:Extended:Z}"),
+                       total_difficulty: 1
+                     }
+                   ]
+                 }
+               })
+
+      transaction_after = Repo.get!(Transaction, transaction_hash)
+
+      assert transaction_after.block_hash == nil
+      assert transaction_after.block_number == nil
+      assert transaction_after.gas_used == nil
+      assert transaction_after.cumulative_gas_used == nil
+      assert transaction_after.index == nil
+      assert transaction_after.error == nil
+      assert transaction_after.status == nil
+    end
+
+    test "address_token_balances and address_current_token_balances are deleted during reorgs" do
+      %Block{number: block_number} = insert(:block, consensus: true)
+      value_before = Decimal.new(1)
+
+      %Address{hash: address_hash} = address = insert(:address)
+
+      %Address.TokenBalance{
+        address_hash: ^address_hash,
+        token_contract_address_hash: token_contract_address_hash,
+        block_number: ^block_number
+      } = insert(:token_balance, address: address, block_number: block_number, value: value_before)
+
+      %Address.CurrentTokenBalance{
+        address_hash: ^address_hash,
+        token_contract_address_hash: ^token_contract_address_hash,
+        block_number: ^block_number
+      } =
+        insert(:address_current_token_balance,
+          address: address,
+          token_contract_address_hash: token_contract_address_hash,
+          block_number: block_number,
+          value: value_before
+        )
+
+      miner_hash_after = address_hash()
+      from_address_hash_after = address_hash()
+      block_hash_after = block_hash()
+
+      assert {:ok, _} =
+               Import.all(%{
+                 addresses: %{
+                   params: [
+                     %{hash: miner_hash_after},
+                     %{hash: from_address_hash_after}
+                   ]
+                 },
+                 blocks: %{
+                   params: [
+                     %{
+                       consensus: true,
+                       difficulty: 1,
+                       gas_limit: 1,
+                       gas_used: 1,
+                       hash: block_hash_after,
+                       miner_hash: miner_hash_after,
+                       nonce: 1,
+                       number: block_number,
+                       parent_hash: block_hash(),
+                       size: 1,
+                       timestamp: Timex.parse!("2019-01-01T02:00:00Z", "{ISO:Extended:Z}"),
+                       total_difficulty: 1
+                     }
+                   ]
+                 }
+               })
+
+      assert is_nil(
+               Repo.get_by(Address.CurrentTokenBalance,
+                 address_hash: address_hash,
+                 token_contract_address_hash: token_contract_address_hash
+               )
+             )
+
+      assert is_nil(
+               Repo.get_by(Address.TokenBalance,
+                 address_hash: address_hash,
+                 token_contract_address_hash: token_contract_address_hash,
+                 block_number: block_number
+               )
+             )
+    end
+
+    test "address_current_token_balances is derived during reorgs" do
+      %Block{number: block_number} = insert(:block, consensus: true)
+      previous_block_number = block_number - 1
+
+      %Address.TokenBalance{
+        address_hash: address_hash,
+        token_contract_address_hash: token_contract_address_hash,
+        value: previous_value,
+        block_number: previous_block_number
+      } = insert(:token_balance, block_number: previous_block_number)
+
+      address = Repo.get(Address, address_hash)
+
+      %Address.TokenBalance{
+        address_hash: ^address_hash,
+        token_contract_address_hash: token_contract_address_hash,
+        value: current_value,
+        block_number: ^block_number
+      } =
+        insert(:token_balance,
+          address: address,
+          token_contract_address_hash: token_contract_address_hash,
+          block_number: block_number
+        )
+
+      refute current_value == previous_value
+
+      %Address.CurrentTokenBalance{
+        address_hash: ^address_hash,
+        token_contract_address_hash: ^token_contract_address_hash,
+        block_number: ^block_number
+      } =
+        insert(:address_current_token_balance,
+          address: address,
+          token_contract_address_hash: token_contract_address_hash,
+          block_number: block_number,
+          value: current_value
+        )
+
+      miner_hash_after = address_hash()
+      from_address_hash_after = address_hash()
+      block_hash_after = block_hash()
+
+      assert {:ok, _} =
+               Import.all(%{
+                 addresses: %{
+                   params: [
+                     %{hash: miner_hash_after},
+                     %{hash: from_address_hash_after}
+                   ]
+                 },
+                 blocks: %{
+                   params: [
+                     %{
+                       consensus: true,
+                       difficulty: 1,
+                       gas_limit: 1,
+                       gas_used: 1,
+                       hash: block_hash_after,
+                       miner_hash: miner_hash_after,
+                       nonce: 1,
+                       number: block_number,
+                       parent_hash: block_hash(),
+                       size: 1,
+                       timestamp: Timex.parse!("2019-01-01T02:00:00Z", "{ISO:Extended:Z}"),
+                       total_difficulty: 1
+                     }
+                   ]
+                 }
+               })
+
+      assert %Address.CurrentTokenBalance{block_number: ^previous_block_number, value: ^previous_value} =
+               Repo.get_by(Address.CurrentTokenBalance,
+                 address_hash: address_hash,
+                 token_contract_address_hash: token_contract_address_hash
+               )
+
+      assert is_nil(
+               Repo.get_by(Address.TokenBalance,
+                 address_hash: address_hash,
+                 token_contract_address_hash: token_contract_address_hash,
+                 block_number: block_number
+               )
+             )
+    end
+
+    test "address_token_balances and address_current_token_balances can be replaced during reorgs" do
+      %Block{number: block_number} = insert(:block, consensus: true)
+      value_before = Decimal.new(1)
+
+      %Address{hash: address_hash} = address = insert(:address)
+
+      %Address.TokenBalance{
+        address_hash: ^address_hash,
+        token_contract_address_hash: token_contract_address_hash,
+        block_number: ^block_number
+      } = insert(:token_balance, address: address, block_number: block_number, value: value_before)
+
+      %Address.CurrentTokenBalance{
+        address_hash: ^address_hash,
+        token_contract_address_hash: ^token_contract_address_hash,
+        block_number: ^block_number
+      } =
+        insert(:address_current_token_balance,
+          address: address,
+          token_contract_address_hash: token_contract_address_hash,
+          block_number: block_number,
+          value: value_before
+        )
+
+      miner_hash_after = address_hash()
+      from_address_hash_after = address_hash()
+      block_hash_after = block_hash()
+      value_after = Decimal.add(value_before, 1)
+
+      assert {:ok, _} =
+               Import.all(%{
+                 addresses: %{
+                   params: [
+                     %{hash: address_hash},
+                     %{hash: token_contract_address_hash},
+                     %{hash: miner_hash_after},
+                     %{hash: from_address_hash_after}
+                   ]
+                 },
+                 address_token_balances: %{
+                   params: [
+                     %{
+                       address_hash: address_hash,
+                       token_contract_address_hash: token_contract_address_hash,
+                       block_number: block_number,
+                       value: value_after,
+                       token_type: "ERC-20"
+                     }
+                   ]
+                 },
+                 address_current_token_balances: %{
+                   params: [
+                     %{
+                       address_hash: address_hash,
+                       token_contract_address_hash: token_contract_address_hash,
+                       block_number: block_number,
+                       value: value_after,
+                       token_type: "ERC-20"
+                     }
+                   ]
+                 },
+                 blocks: %{
+                   params: [
+                     %{
+                       consensus: true,
+                       difficulty: 1,
+                       gas_limit: 1,
+                       gas_used: 1,
+                       hash: block_hash_after,
+                       miner_hash: miner_hash_after,
+                       nonce: 1,
+                       number: block_number,
+                       parent_hash: block_hash(),
+                       size: 1,
+                       timestamp: Timex.parse!("2019-01-01T02:00:00Z", "{ISO:Extended:Z}"),
+                       total_difficulty: 1
+                     }
+                   ]
+                 }
+               })
+
+      assert %Address.CurrentTokenBalance{value: ^value_after} =
+               Repo.get_by(Address.CurrentTokenBalance,
+                 address_hash: address_hash,
+                 token_contract_address_hash: token_contract_address_hash
+               )
+
+      assert %Address.TokenBalance{value: ^value_after} =
+               Repo.get_by(Address.TokenBalance,
+                 address_hash: address_hash,
+                 token_contract_address_hash: token_contract_address_hash,
+                 block_number: block_number
+               )
     end
   end
 end

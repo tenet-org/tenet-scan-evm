@@ -1,18 +1,28 @@
 defmodule BlockScoutWeb.TransactionTokenTransferControllerTest do
   use BlockScoutWeb.ConnCase
 
-  import BlockScoutWeb.Router.Helpers, only: [transaction_token_transfer_path: 3]
+  import Mox
+
+  import BlockScoutWeb.WebRouter.Helpers, only: [transaction_token_transfer_path: 3]
 
   alias Explorer.ExchangeRates.Token
 
   describe "GET index/3" do
     test "load token transfers", %{conn: conn} do
+      EthereumJSONRPC.Mox
+      |> expect(:json_rpc, fn %{id: _id, method: "net_version", params: []}, _options ->
+        {:ok, "100"}
+      end)
+
       transaction = insert(:transaction)
       token_transfer = insert(:token_transfer, transaction: transaction)
 
       conn = get(conn, transaction_token_transfer_path(BlockScoutWeb.Endpoint, :index, transaction.hash))
 
-      assert List.first(conn.assigns.transaction.token_transfers).id == token_transfer.id
+      assigned_token_transfer = List.first(conn.assigns.transaction.token_transfers)
+
+      assert {assigned_token_transfer.transaction_hash, assigned_token_transfer.log_index} ==
+               {token_transfer.transaction_hash, token_transfer.log_index}
     end
 
     test "with missing transaction", %{conn: conn} do
@@ -25,7 +35,7 @@ defmodule BlockScoutWeb.TransactionTokenTransferControllerTest do
     test "with invalid transaction hash", %{conn: conn} do
       conn = get(conn, transaction_token_transfer_path(BlockScoutWeb.Endpoint, :index, "nope"))
 
-      assert html_response(conn, 404)
+      assert html_response(conn, 422)
     end
 
     test "includes transaction data", %{conn: conn} do
@@ -43,26 +53,29 @@ defmodule BlockScoutWeb.TransactionTokenTransferControllerTest do
     end
 
     test "includes token transfers for the transaction", %{conn: conn} do
-      transaction = insert(:transaction)
+      transaction = insert(:transaction) |> with_block()
 
-      expected_token_transfer = insert(:token_transfer, transaction: transaction)
+      insert(:token_transfer, transaction: transaction, block: transaction.block, block_number: transaction.block_number)
 
-      insert(:token_transfer, transaction: transaction)
+      insert(:token_transfer, transaction: transaction, block: transaction.block, block_number: transaction.block_number)
 
       path = transaction_token_transfer_path(BlockScoutWeb.Endpoint, :index, transaction.hash)
 
-      conn = get(conn, path)
+      conn = get(conn, path, %{type: "JSON"})
 
-      actual_token_transfer_ids =
-        conn.assigns.token_transfers
-        |> Enum.map(fn it -> it.id end)
+      assert json_response(conn, 200)
 
-      assert html_response(conn, 200)
+      {:ok, %{"items" => items}} = conn.resp_body |> Poison.decode()
 
-      assert Enum.member?(actual_token_transfer_ids, expected_token_transfer.id)
+      assert Enum.count(items) == 2
     end
 
     test "includes USD exchange rate value for address in assigns", %{conn: conn} do
+      EthereumJSONRPC.Mox
+      |> expect(:json_rpc, fn %{id: _id, method: "net_version", params: []}, _options ->
+        {:ok, "100"}
+      end)
+
       transaction = insert(:transaction)
 
       conn = get(conn, transaction_token_transfer_path(BlockScoutWeb.Endpoint, :index, transaction.hash))
@@ -76,28 +89,25 @@ defmodule BlockScoutWeb.TransactionTokenTransferControllerTest do
         |> insert()
         |> with_block()
 
-      {:ok, first_transfer_time} = NaiveDateTime.new(2000, 1, 1, 0, 0, 5)
-      {:ok, remaining_transfers_time} = NaiveDateTime.new(1999, 1, 1, 0, 0, 0)
-      insert(:token_transfer, transaction: transaction, inserted_at: first_transfer_time)
+      insert(:token_transfer, transaction: transaction, block_number: 1000, log_index: 1)
 
-      1..5
-      |> Enum.each(fn log_index ->
-        insert(:token_transfer, transaction: transaction, inserted_at: remaining_transfers_time, log_index: log_index)
+      Enum.each(2..5, fn item ->
+        insert(:token_transfer, transaction: transaction, block_number: item + 1001, log_index: item + 1)
       end)
 
       conn =
         get(conn, transaction_token_transfer_path(BlockScoutWeb.Endpoint, :index, transaction.hash), %{
-          "inserted_at" => first_transfer_time |> DateTime.from_naive!("Etc/UTC") |> DateTime.to_iso8601()
+          "block_number" => "1000",
+          "index" => "1",
+          "type" => "JSON"
         })
 
-      actual_times =
-        conn.assigns.token_transfers
-        |> Enum.map(& &1.inserted_at)
+      {:ok, %{"items" => items}} = conn.resp_body |> Poison.decode()
 
-      refute Enum.any?(actual_times, fn time -> first_transfer_time == time end)
+      refute Enum.count(items) == 3
     end
 
-    test "next_page_params exist if not on last page", %{conn: conn} do
+    test "next_page_path exists if not on last page", %{conn: conn} do
       transaction =
         :transaction
         |> insert()
@@ -108,16 +118,21 @@ defmodule BlockScoutWeb.TransactionTokenTransferControllerTest do
         insert(
           :token_transfer,
           transaction: transaction,
-          log_index: log_index
+          log_index: log_index,
+          block: transaction.block,
+          block_number: transaction.block_number
         )
       end)
 
-      conn = get(conn, transaction_token_transfer_path(BlockScoutWeb.Endpoint, :index, transaction.hash))
+      conn =
+        get(conn, transaction_token_transfer_path(BlockScoutWeb.Endpoint, :index, transaction.hash), %{type: "JSON"})
 
-      assert Enum.any?(conn.assigns.next_page_params)
+      {:ok, %{"next_page_path" => path}} = conn.resp_body |> Poison.decode()
+
+      assert path
     end
 
-    test "next_page_params are empty if on last page", %{conn: conn} do
+    test "next_page_path is empty if on last page", %{conn: conn} do
       transaction =
         :transaction
         |> insert()
@@ -128,13 +143,75 @@ defmodule BlockScoutWeb.TransactionTokenTransferControllerTest do
         insert(
           :token_transfer,
           transaction: transaction,
-          log_index: log_index
+          log_index: log_index,
+          block_number: transaction.block_number,
+          block: transaction.block
         )
       end)
 
+      conn =
+        get(conn, transaction_token_transfer_path(BlockScoutWeb.Endpoint, :index, transaction.hash), %{type: "JSON"})
+
+      {:ok, %{"next_page_path" => path}} = conn.resp_body |> Poison.decode()
+
+      refute path
+    end
+
+    test "preloads to_address smart contract verified", %{conn: conn} do
+      EthereumJSONRPC.Mox
+      |> expect(
+        :json_rpc,
+        fn %{
+             id: _id,
+             method: "eth_getStorageAt",
+             params: [
+               _,
+               "0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc",
+               "latest"
+             ]
+           },
+           _options ->
+          {:ok, "0x0000000000000000000000000000000000000000000000000000000000000000"}
+        end
+      )
+      |> expect(
+        :json_rpc,
+        fn %{
+             id: _id,
+             method: "eth_getStorageAt",
+             params: [
+               _,
+               "0xa3f0ad74e5423aebfd80d3ef4346578335a9a72aeaee59ff6cb3582b35133d50",
+               "latest"
+             ]
+           },
+           _options ->
+          {:ok, "0x0000000000000000000000000000000000000000000000000000000000000000"}
+        end
+      )
+      |> expect(:json_rpc, fn %{
+                                id: 0,
+                                method: "eth_getStorageAt",
+                                params: [
+                                  _,
+                                  "0x7050c9e0f4ca769c69bd3a8ef740bc37934f8e2c036e5a723fd8ee048ed3f8c3",
+                                  "latest"
+                                ]
+                              },
+                              _options ->
+        {:ok, "0x0000000000000000000000000000000000000000000000000000000000000000"}
+      end)
+      |> expect(:json_rpc, fn %{id: _id, method: "net_version", params: []}, _options ->
+        {:ok, "100"}
+      end)
+
+      transaction = insert(:transaction_to_verified_contract)
+
       conn = get(conn, transaction_token_transfer_path(BlockScoutWeb.Endpoint, :index, transaction.hash))
 
-      assert is_nil(conn.assigns.next_page_params)
+      assert html_response(conn, 200)
+      assert conn.assigns.transaction.hash == transaction.hash
+      assert conn.assigns.transaction.to_address.smart_contract != nil
     end
   end
 end

@@ -1,7 +1,7 @@
 defmodule BlockScoutWeb.Tokens.HolderControllerTest do
-  use BlockScoutWeb.ConnCase
+  use BlockScoutWeb.ConnCase, async: true
 
-  alias Explorer.Chain.Hash
+  alias Explorer.Chain.{Address, Hash}
 
   describe "GET index/3" do
     test "with invalid address hash", %{conn: conn} do
@@ -22,7 +22,7 @@ defmodule BlockScoutWeb.Tokens.HolderControllerTest do
 
       insert_list(
         2,
-        :token_balance,
+        :address_current_token_balance,
         token_contract_address_hash: token.contract_address_hash
       )
 
@@ -43,16 +43,15 @@ defmodule BlockScoutWeb.Tokens.HolderControllerTest do
         1..50
         |> Enum.map(
           &insert(
-            :token_balance,
+            :address_current_token_balance,
             token_contract_address_hash: token.contract_address_hash,
             value: &1 + 1000
           )
         )
-        |> Enum.map(& &1.value)
 
       token_balance =
         insert(
-          :token_balance,
+          :address_current_token_balance,
           token_contract_address_hash: token.contract_address_hash,
           value: 50000
         )
@@ -60,15 +59,17 @@ defmodule BlockScoutWeb.Tokens.HolderControllerTest do
       conn =
         get(conn, token_holder_path(conn, :index, token.contract_address_hash), %{
           "value" => Decimal.to_integer(token_balance.value),
-          "address_hash" => Hash.to_string(token_balance.address_hash)
+          "address_hash" => Hash.to_string(token_balance.address_hash),
+          "type" => "JSON"
         })
 
-      actual_token_balances =
-        conn.assigns.token_balances
-        |> Enum.map(& &1.value)
-        |> Enum.reverse()
+      token_balance_tiles = json_response(conn, 200)["items"]
 
-      assert second_page_token_balances == actual_token_balances
+      assert Enum.all?(second_page_token_balances, fn token_balance ->
+               Enum.any?(token_balance_tiles, fn tile ->
+                 String.contains?(tile, Address.checksum(token_balance.address_hash))
+               end)
+             end)
     end
 
     test "next_page_params exists if not on last page", %{conn: conn} do
@@ -78,15 +79,15 @@ defmodule BlockScoutWeb.Tokens.HolderControllerTest do
       Enum.each(
         1..51,
         &insert(
-          :token_balance,
+          :address_current_token_balance,
           token_contract_address_hash: token.contract_address_hash,
           value: &1 + 1000
         )
       )
 
-      conn = get(conn, token_holder_path(conn, :index, token.contract_address_hash))
+      conn = get(conn, token_holder_path(conn, :index, token.contract_address_hash, %{"type" => "JSON"}))
 
-      assert conn.assigns.next_page_params
+      assert json_response(conn, 200)["next_page_path"]
     end
   end
 end

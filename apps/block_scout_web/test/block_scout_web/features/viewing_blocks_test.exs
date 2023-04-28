@@ -1,7 +1,8 @@
 defmodule BlockScoutWeb.ViewingBlocksTest do
-  use BlockScoutWeb.FeatureCase, async: true
+  use BlockScoutWeb.FeatureCase, async: false
 
-  alias BlockScoutWeb.{BlockListPage, BlockPage, Notifier}
+  alias BlockScoutWeb.{BlockListPage, BlockPage}
+  alias Explorer.Chain.Block
 
   setup do
     timestamp = Timex.now() |> Timex.shift(hours: -1)
@@ -58,7 +59,12 @@ defmodule BlockScoutWeb.ViewingBlocksTest do
 
       internal_transaction =
         :internal_transaction_create
-        |> insert(transaction: transaction, index: 0)
+        |> insert(
+          transaction: transaction,
+          index: 0,
+          block_hash: transaction.block_hash,
+          block_index: 1
+        )
         |> with_contract_creation(contract_address)
 
       session
@@ -82,7 +88,8 @@ defmodule BlockScoutWeb.ViewingBlocksTest do
         3,
         :token_transfer,
         transaction: transaction,
-        token_contract_address: contract_token_address
+        token_contract_address: contract_token_address,
+        block: block
       )
 
       session
@@ -131,33 +138,13 @@ defmodule BlockScoutWeb.ViewingBlocksTest do
       |> assert_has(BlockListPage.block(block))
     end
 
-    test "inserts place holder blocks if out of order block received", %{session: session} do
-      BlockListPage.visit_page(session)
-
-      block = insert(:block, number: 315)
-      Notifier.handle_event({:chain_event, :blocks, :realtime, [block]})
+    test "inserts place holder blocks on render for out of order blocks", %{session: session} do
+      insert(:block, number: 315)
 
       session
-      |> assert_has(BlockListPage.block(block))
+      |> BlockListPage.visit_page()
+      |> assert_has(BlockListPage.block(%Block{number: 314}))
       |> assert_has(BlockListPage.place_holder_blocks(3))
-    end
-
-    test "replaces place holder block if skipped block received", %{session: session} do
-      BlockListPage.visit_page(session)
-
-      block = insert(:block, number: 315)
-      Notifier.handle_event({:chain_event, :blocks, :realtime, [block]})
-
-      session
-      |> assert_has(BlockListPage.block(block))
-      |> assert_has(BlockListPage.place_holder_blocks(3))
-
-      skipped_block = insert(:block, number: 314)
-      Notifier.handle_event({:chain_event, :blocks, :realtime, [skipped_block]})
-
-      session
-      |> assert_has(BlockListPage.block(skipped_block))
-      |> assert_has(BlockListPage.place_holder_blocks(2))
     end
   end
 
@@ -168,9 +155,8 @@ defmodule BlockScoutWeb.ViewingBlocksTest do
           uncle = insert(:block, consensus: false)
           insert(:block_second_degree_relation, uncle_hash: uncle.hash)
 
-          :transaction
-          |> insert()
-          |> with_block(uncle)
+          transaction = insert(:transaction)
+          insert(:transaction_fork, hash: transaction.hash, uncle_hash: uncle.hash)
 
           uncle
         end

@@ -11,9 +11,12 @@ ExUnit.start()
 
 {:ok, _} = Application.ensure_all_started(:ex_machina)
 
-Ecto.Adapters.SQL.Sandbox.mode(Explorer.Repo, :manual)
+Ecto.Adapters.SQL.Sandbox.mode(Explorer.Repo, :auto)
+Ecto.Adapters.SQL.Sandbox.mode(Explorer.Repo.Account, :auto)
 
 Mox.defmock(Explorer.ExchangeRates.Source.TestSource, for: Explorer.ExchangeRates.Source)
 Mox.defmock(Explorer.Market.History.Source.TestSource, for: Explorer.Market.History.Source)
+Mox.defmock(Explorer.History.TestHistorian, for: Explorer.History.Historian)
 
 Mox.defmock(EthereumJSONRPC.Mox, for: EthereumJSONRPC.Transport)
+Mox.defmock(Explorer.Mox.HTTPoison, for: HTTPoison.Base)

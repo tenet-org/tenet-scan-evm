@@ -1,20 +1,20 @@
 defmodule BlockScoutWeb.AddressTokenBalanceView do
   use BlockScoutWeb, :view
 
+  alias BlockScoutWeb.AccessHelper
+  alias Explorer.Chain
+  alias Explorer.Chain.Address
+  alias Explorer.Counters.AddressTokenUsdSum
+
   def tokens_count_title(token_balances) do
     ngettext("%{count} token", "%{count} tokens", Enum.count(token_balances))
   end
 
   def filter_by_type(token_balances, type) do
-    Enum.filter(token_balances, &(&1.token.type == type))
+    Enum.filter(token_balances, fn {_token_balance, token} -> token.type == type end)
   end
 
-  @doc """
-  Sorts the given list of tokens in alphabetically order considering nil values in the bottom of
-  the list.
-  """
-  def sort_by_name(token_balances) do
-    {unnamed, named} = Enum.split_with(token_balances, &is_nil(&1.token.name))
-    Enum.sort_by(named, &String.downcase(&1.token.name)) ++ unnamed
+  def address_tokens_usd_sum_cache(address, token_balances) do
+    AddressTokenUsdSum.fetch(address, token_balances)
   end
 end

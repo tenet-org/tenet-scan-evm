@@ -67,6 +67,9 @@
         {Credo.Check.Readability.TrailingBlankLine, false},
         {Credo.Check.Readability.TrailingWhiteSpace, false},
 
+        # outdated by lazy Logger in Elixir 1.7.  See https://elixir-lang.org/blog/2018/07/25/elixir-v1-7-0-released/
+        {Credo.Check.Warning.LazyLogging, false},
+
         # not handled by formatter
         {Credo.Check.Consistency.ExceptionNames},
         {Credo.Check.Consistency.ParameterPatternMatching},
@@ -75,8 +78,9 @@
         # Priority values are: `low, normal, high, higher`
         #
         {Credo.Check.Design.AliasUsage,
-         excluded_namespaces: ~w(Import Socket Task),
-         excluded_lastnames: ~w(Address DateTime Exporter Fetcher Full Instrumenter Name Number Repo Time Unit),
+         excluded_namespaces: ~w(Block Blocks Import Runner Socket SpandexDatadog Task),
+         excluded_lastnames:
+           ~w(Address DateTime Exporter Fetcher Full Instrumenter Logger Monitor Name Number Repo Spec Time Unit),
          priority: :low},
 
         # For some checks, you can also set other parameters
@@ -85,7 +89,7 @@
         # or the `schema` macro in Ecto schemas to trigger DuplicatedCode, just
         # set the `excluded_macros` parameter to `[:schema, :setup, :test]`.
         #
-        {Credo.Check.Design.DuplicatedCode, excluded_macros: []},
+        {Credo.Check.Design.DuplicatedCode, excluded_macros: [], mass_threshold: 80},
 
         # You can also customize the exit_status of each check.
         # If you don't want TODO comments to cause `mix credo` to fail, just
@@ -117,7 +121,6 @@
         {Credo.Check.Warning.ExpensiveEmptyEnumCheck},
         {Credo.Check.Warning.IExPry},
         {Credo.Check.Warning.IoInspect},
-        {Credo.Check.Warning.LazyLogging},
         {Credo.Check.Warning.OperationOnSameValues},
         {Credo.Check.Warning.OperationWithConstantResult},
         {Credo.Check.Warning.UnusedEnumOperation},
@@ -128,7 +131,7 @@
         {Credo.Check.Warning.UnusedRegexOperation},
         {Credo.Check.Warning.UnusedStringOperation},
         {Credo.Check.Warning.UnusedTupleOperation},
-        {Credo.Check.Warning.RaiseInsideRescue, false},
+        {Credo.Check.Warning.RaiseInsideRescue},
 
         # Controversial and experimental checks (opt-in, just remove `, false`)
         #

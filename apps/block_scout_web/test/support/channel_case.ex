@@ -18,7 +18,7 @@ defmodule BlockScoutWeb.ChannelCase do
   using do
     quote do
       # Import conveniences for testing with channels
-      use Phoenix.ChannelTest
+      import Phoenix.ChannelTest
 
       # The default endpoint for testing
       @endpoint BlockScoutWeb.Endpoint
@@ -29,7 +29,7 @@ defmodule BlockScoutWeb.ChannelCase do
 
   @dialyzer {:nowarn_function, __ex_unit_setup_0: 1}
   setup tags do
-    :ok = Ecto.Adapters.SQL.Sandbox.checkout(Explorer.Repo)
+    _ = Ecto.Adapters.SQL.Sandbox.checkout(Explorer.Repo)
 
     unless tags[:async] do
       Ecto.Adapters.SQL.Sandbox.mode(Explorer.Repo, {:shared, self()})

@@ -14,6 +14,7 @@ defmodule EthereumJSONRPC.ReceiptsTest do
   describe "fetch/2" do
     test "with receipts and logs", %{json_rpc_named_arguments: json_rpc_named_arguments} do
       %{
+        created_contract_address_hash: nil,
         cumulative_gas_used: cumulative_gas_used,
         gas_used: gas_used,
         address_hash: address_hash,
@@ -29,9 +30,11 @@ defmodule EthereumJSONRPC.ReceiptsTest do
         case Keyword.fetch!(json_rpc_named_arguments, :variant) do
           EthereumJSONRPC.Geth ->
             %{
+              created_contract_address_hash: nil,
               cumulative_gas_used: 884_322,
               address_hash: "0x1e2fbe6be9eb39fc894d38be976111f332172d83",
               block_number: 3_560_000,
+              block_hash: nil,
               data:
                 "0x00000000000000000000000033066f6a8adf2d4f5db193524b6fbae062ec0d110000000000000000000000000000000000000000000000000000000000001030",
               index: 12,
@@ -43,8 +46,10 @@ defmodule EthereumJSONRPC.ReceiptsTest do
               transaction_index: 17
             }
 
-          EthereumJSONRPC.Parity ->
+          EthereumJSONRPC.Nethermind ->
             %{
+              created_contract_address_hash: nil,
+              block_hash: nil,
               cumulative_gas_used: 50450,
               gas_used: 50450,
               address_hash: "0x8bf38d4764929064f2d4d3a56520a76ab3df415b",
@@ -73,12 +78,14 @@ defmodule EthereumJSONRPC.ReceiptsTest do
              %{
                id: 0,
                result: %{
+                 "contractAddress" => nil,
                  "cumulativeGasUsed" => integer_to_quantity(cumulative_gas_used),
                  "gasUsed" => integer_to_quantity(gas_used),
                  "logs" => [
                    %{
                      "address" => address_hash,
                      "blockNumber" => integer_to_quantity(block_number),
+                     "blockHash" => nil,
                      "data" => data,
                      "logIndex" => integer_to_quantity(index),
                      "topics" => [first_topic],

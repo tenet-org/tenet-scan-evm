@@ -1,17 +1,18 @@
 defmodule Explorer.ExchangeRates do
   @moduledoc """
-  Local cache for token exchange rates.
+  Local cache for native coin exchange rates.
 
-  Exchange rate data is updated every 5 minutes.
+  Exchange rate data is updated every 10 minutes or CACHE_EXCHANGE_RATES_PERIOD seconds.
   """
 
   use GenServer
 
   require Logger
 
-  alias Explorer.ExchangeRates.Token
+  alias Explorer.Chain.Events.Publisher
+  alias Explorer.ExchangeRates.{Source, Token}
 
-  @interval :timer.minutes(5)
+  @interval Application.compile_env(:explorer, __MODULE__)[:cache_period]
   @table_name :exchange_rates
 
   @impl GenServer
@@ -26,12 +27,8 @@ defmodule Explorer.ExchangeRates do
   # Callback for successful fetch
   @impl GenServer
   def handle_info({_ref, {:ok, tokens}}, state) do
-    records =
-      for %Token{symbol: symbol} = token <- tokens do
-        {symbol, token}
-      end
-
     if store() == :ets do
+      records = Enum.map(tokens, &Token.to_tuple/1)
       :ets.insert(table_name(), records)
     end
 
@@ -45,7 +42,7 @@ defmodule Explorer.ExchangeRates do
   def handle_info({_ref, {:error, reason}}, state) do
     Logger.warn(fn -> "Failed to get exchange rates with reason '#{reason}'." end)
 
-    fetch_rates()
+    schedule_next_consolidation()
 
     {:noreply, state}
   end
@@ -80,6 +77,10 @@ defmodule Explorer.ExchangeRates do
     GenServer.start_link(__MODULE__, opts, name: __MODULE__)
   end
 
+  defp schedule_next_consolidation do
+    Process.send_after(self(), :update, :timer.minutes(1))
+  end
+
   @doc """
   Lists exchange rates for the tracked tickers.
   """
@@ -93,9 +94,9 @@ defmodule Explorer.ExchangeRates do
   """
   @spec lookup(String.t()) :: Token.t() | nil
   def lookup(symbol) do
-    if store() == :ets do
+    if store() == :ets && enabled?() do
       case :ets.lookup(table_name(), symbol) do
-        [{_key, token} | _] -> token
+        [tuple | _] when is_tuple(tuple) -> Token.from_tuple(tuple)
         _ -> nil
       end
     end
@@ -103,15 +104,13 @@ defmodule Explorer.ExchangeRates do
 
   @doc false
   @spec table_name() :: atom()
-  def table_name, do: @table_name
+  def table_name do
+    config(:table_name) || @table_name
+  end
 
   @spec broadcast_event(atom()) :: :ok
   defp broadcast_event(event_type) do
-    Registry.dispatch(Registry.ChainEvents, event_type, fn entries ->
-      for {pid, _registered_val} <- entries do
-        send(pid, {:chain_event, event_type})
-      end
-    end)
+    Publisher.broadcast(event_type)
   end
 
   @spec config(atom()) :: term
@@ -119,22 +118,17 @@ defmodule Explorer.ExchangeRates do
     Application.get_env(:explorer, __MODULE__, [])[key]
   end
 
-  @spec exchange_rates_source() :: module()
-  defp exchange_rates_source do
-    config(:source) || Explorer.ExchangeRates.Source.CoinMarketCap
-  end
-
   @spec fetch_rates :: Task.t()
   defp fetch_rates do
     Task.Supervisor.async_nolink(Explorer.MarketTaskSupervisor, fn ->
-      exchange_rates_source().fetch_exchange_rates()
+      Source.fetch_exchange_rates()
     end)
   end
 
   defp list_from_store(:ets) do
     table_name()
     |> :ets.tab2list()
-    |> Enum.map(fn {_, rate} -> rate end)
+    |> Enum.map(&Token.from_tuple/1)
     |> Enum.sort_by(fn %Token{symbol: symbol} -> symbol end)
   end
 
@@ -142,5 +136,9 @@ defmodule Explorer.ExchangeRates do
 
   defp store do
     config(:store) || :ets
+  end
+
+  defp enabled? do
+    Application.get_env(:explorer, __MODULE__, [])[:enabled] == true
   end
 end

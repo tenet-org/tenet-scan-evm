@@ -1,150 +1,100 @@
 import $ from 'jquery'
-import _ from 'lodash'
+import omit from 'lodash.omit'
 import URI from 'urijs'
 import humps from 'humps'
 import numeral from 'numeral'
-import socket from '../socket'
-import { batchChannel, initRedux, prependWithClingBottom } from '../utils'
-import { updateAllAges } from '../lib/from_now'
+import socket, { subscribeChannel } from '../socket'
+import { createStore, connectElements } from '../lib/redux_helpers.js'
 import { updateAllCalculatedUsdValues } from '../lib/currency.js'
 import { loadTokenBalanceDropdown } from '../lib/token_balance_dropdown'
-
-const BATCH_THRESHOLD = 10
+import '../lib/token_balance_dropdown_search'
+import '../lib/async_listing_load'
+import '../app'
+import {
+  openQrModal
+} from '../lib/modals'
 
 export const initialState = {
-  addressHash: null,
-  balance: null,
-  batchCountAccumulator: 0,
-  beyondPageOne: null,
   channelDisconnected: false,
+
+  addressHash: null,
   filter: null,
-  newBlock: null,
-  newInternalTransactions: [],
-  newPendingTransactions: [],
-  newTransactions: [],
-  newTransactionHashes: [],
-  newPendingTransactionHashesBatch: [],
+
+  balance: null,
+  balanceCard: null,
+  fetchedCoinBalanceBlockNumber: null,
   transactionCount: null,
-  validationCount: null
+  tokenTransferCount: null,
+  gasUsageCount: null,
+  validationCount: null,
+  countersFetched: false
 }
 
 export function reducer (state = initialState, action) {
   switch (action.type) {
-    case 'PAGE_LOAD': {
-      return Object.assign({}, state, {
-        addressHash: action.addressHash,
-        beyondPageOne: action.beyondPageOne,
-        filter: action.filter,
-        transactionCount: numeral(action.transactionCount).value(),
-        validationCount: action.transactionCount ? numeral(action.transactionCount).value() : null
-      })
+    case 'PAGE_LOAD':
+    case 'ELEMENTS_LOAD': {
+      return Object.assign({}, state, omit(action, 'type'))
     }
     case 'CHANNEL_DISCONNECTED': {
       if (state.beyondPageOne) return state
 
       return Object.assign({}, state, {
-        channelDisconnected: true,
-        batchCountAccumulator: 0
+        channelDisconnected: true
+      })
+    }
+    case 'COUNTERS_FETCHED': {
+      return Object.assign({}, state, {
+        transactionCount: action.transactionCount,
+        tokenTransferCount: action.tokenTransferCount,
+        gasUsageCount: action.gasUsageCount,
+        validationCount: action.validationCount,
+        crcTotalWorth: action.crcTotalWorth,
+        countersFetched: true
       })
     }
     case 'RECEIVED_NEW_BLOCK': {
       if (state.channelDisconnected) return state
 
+      // @ts-ignore
       const validationCount = state.validationCount + 1
-
-      if (state.beyondPageOne) return Object.assign({}, state, { validationCount })
-      return Object.assign({}, state, {
-        newBlock: action.msg.blockHtml,
-        validationCount
-      })
+      return Object.assign({}, state, { validationCount })
     }
-    case 'RECEIVED_NEW_INTERNAL_TRANSACTION_BATCH': {
-      if (state.channelDisconnected || state.beyondPageOne) return state
-
-      const incomingInternalTransactions = action.msgs
-        .filter(({toAddressHash, fromAddressHash}) => (
-          !state.filter ||
-          (state.filter === 'to' && toAddressHash === state.addressHash) ||
-          (state.filter === 'from' && fromAddressHash === state.addressHash)
-        ))
-
-      if (!state.batchCountAccumulator && incomingInternalTransactions.length < BATCH_THRESHOLD) {
-        return Object.assign({}, state, {
-          newInternalTransactions: [
-            ...state.newInternalTransactions,
-            ..._.map(incomingInternalTransactions, 'internalTransactionHtml')
-          ]
-        })
-      } else {
-        return Object.assign({}, state, {
-          batchCountAccumulator: state.batchCountAccumulator + incomingInternalTransactions.length
-        })
-      }
-    }
-    case 'RECEIVED_NEW_PENDING_TRANSACTION_BATCH': {
-      if (state.channelDisconnected || state.beyondPageOne) return state
-
-      const incomingPendingTransactions = action.msgs
-        .filter(({toAddressHash, fromAddressHash}) => (
-          !state.filter ||
-          (state.filter === 'to' && toAddressHash === state.addressHash) ||
-          (state.filter === 'from' && fromAddressHash === state.addressHash)
-        ))
-      if (!state.newPendingTransactionHashesBatch.length && incomingPendingTransactions.length < BATCH_THRESHOLD) {
-        return Object.assign({}, state, {
-          newPendingTransactions: [
-            ...state.newPendingTransactions,
-            ..._.map(incomingPendingTransactions, 'transactionHtml')
-          ]
-        })
-      } else {
-        return Object.assign({}, state, {
-          newPendingTransactionHashesBatch: [
-            ...state.newPendingTransactionHashesBatch,
-            ..._.map(incomingPendingTransactions, 'transactionHash')
-          ]
-        })
-      }
-    }
-    case 'RECEIVED_NEW_TRANSACTION_BATCH': {
+    case 'RECEIVED_NEW_TRANSACTION': {
       if (state.channelDisconnected) return state
 
-      const transactionCount = state.transactionCount + action.msgs.length
+      // @ts-ignore
+      const transactionCount = (action.msg.fromAddressHash === state.addressHash) ? state.transactionCount + 1 : state.transactionCount
 
-      if (state.beyondPageOne) return Object.assign({}, state, { transactionCount })
+      return Object.assign({}, state, { transactionCount })
+    }
+    case 'RECEIVED_NEW_TOKEN_TRANSFER': {
+      if (state.channelDisconnected) return state
 
-      const incomingTransactions = action.msgs
-        .filter(({toAddressHash, fromAddressHash}) => (
-          !state.filter ||
-          (state.filter === 'to' && toAddressHash === state.addressHash) ||
-          (state.filter === 'from' && fromAddressHash === state.addressHash)
-        ))
+      // @ts-ignore
+      const tokenTransferCount = (action.msg.fromAddressHash === state.addressHash) ? state.tokenTransferCount + 1 : state.tokenTransferCount
 
-      const updatedPendingTransactionHashesBatch =
-        _.difference(state.newPendingTransactionHashesBatch, _.map(incomingTransactions, 'transactionHash'))
-
-      if (!state.batchCountAccumulator && incomingTransactions.length < BATCH_THRESHOLD) {
-        return Object.assign({}, state, {
-          newTransactions: [
-            ...state.newTransactions,
-            ..._.map(incomingTransactions, 'transactionHtml')
-          ],
-          newTransactionHashes: _.map(incomingTransactions, 'transactionHash'),
-          newPendingTransactionHashesBatch: updatedPendingTransactionHashesBatch,
-          transactionCount: transactionCount
-        })
-      } else {
-        return Object.assign({}, state, {
-          batchCountAccumulator: state.batchCountAccumulator + incomingTransactions.length,
-          newTransactionHashes: _.map(incomingTransactions, 'transactionHash'),
-          newPendingTransactionHashesBatch: updatedPendingTransactionHashesBatch,
-          transactionCount: transactionCount
-        })
-      }
+      return Object.assign({}, state, { tokenTransferCount })
     }
     case 'RECEIVED_UPDATED_BALANCE': {
       return Object.assign({}, state, {
-        balance: action.msg.balance
+        balanceCard: action.msg.balanceCard,
+        balance: parseFloat(action.msg.balance),
+        fetchedCoinBalanceBlockNumber: action.msg.fetchedCoinBalanceBlockNumber
+      })
+    }
+    case 'RECEIVED_NEW_CURRENT_COIN_BALANCE': {
+      if (state.initialBlockNumber && action.msg.currentCoinBalanceBlockNumber < state.initialBlockNumber) return
+      return Object.assign({}, state, {
+        currentCoinBalance: action.msg.currentCoinBalanceHtml,
+        currentCoinBalanceBlockNumber: action.msg.currentCoinBalanceBlockNumberHtml,
+        initialBlockNumber: state.newBlockNumber,
+        newBlockNumber: action.msg.currentCoinBalanceBlockNumber
+      })
+    }
+    case 'RECEIVED_CHANGED_BYTECODE_EVENT': {
+      return Object.assign({}, state, {
+        isChangedBytecode: true
       })
     }
     default:
@@ -152,104 +102,241 @@ export function reducer (state = initialState, action) {
   }
 }
 
-const $addressDetailsPage = $('[data-page="address-details"]')
-if ($addressDetailsPage.length) {
-  initRedux(reducer, {
-    main (store) {
-      const addressHash = $addressDetailsPage[0].dataset.pageAddressHash
-      const addressChannel = socket.channel(`addresses:${addressHash}`, {})
-      const { filter, blockNumber } = humps.camelizeKeys(URI(window.location).query(true))
-      store.dispatch({
-        type: 'PAGE_LOAD',
-        addressHash,
-        beyondPageOne: !!blockNumber,
-        filter,
-        transactionCount: $('[data-selector="transaction-count"]').text(),
-        validationCount: $('[data-selector="validation-count"]') ? $('[data-selector="validation-count"]').text() : null
-      })
-      addressChannel.join()
-      addressChannel.onError(() => store.dispatch({ type: 'CHANNEL_DISCONNECTED' }))
-      addressChannel.on('balance', (msg) => {
-        store.dispatch({ type: 'RECEIVED_UPDATED_BALANCE', msg: humps.camelizeKeys(msg) })
-      })
-      addressChannel.on('internal_transaction', batchChannel((msgs) =>
-        store.dispatch({ type: 'RECEIVED_NEW_INTERNAL_TRANSACTION_BATCH', msgs: humps.camelizeKeys(msgs) })
-      ))
-      addressChannel.on('pending_transaction', batchChannel((msgs) =>
-        store.dispatch({ type: 'RECEIVED_NEW_PENDING_TRANSACTION_BATCH', msgs: humps.camelizeKeys(msgs) })
-      ))
-      addressChannel.on('transaction', batchChannel((msgs) =>
-        store.dispatch({ type: 'RECEIVED_NEW_TRANSACTION_BATCH', msgs: humps.camelizeKeys(msgs) })
-      ))
-      const blocksChannel = socket.channel(`blocks:${addressHash}`, {})
-      blocksChannel.join()
-      blocksChannel.onError(() => store.dispatch({ type: 'CHANNEL_DISCONNECTED' }))
-      blocksChannel.on('new_block', (msg) => {
-        store.dispatch({ type: 'RECEIVED_NEW_BLOCK', msg: humps.camelizeKeys(msg) })
-      })
-    },
-    render (state, oldState) {
-      const $balance = $('[data-selector="balance-card"]')
-      const $channelBatching = $('[data-selector="channel-batching-message"]')
-      const $channelBatchingCount = $('[data-selector="channel-batching-count"]')
-      const $channelPendingBatching = $('[data-selector="channel-pending-batching-message"]')
-      const $channelPendingBatchingCount = $('[data-selector="channel-pending-batching-count"]')
-      const $channelDisconnected = $('[data-selector="channel-disconnected-message"]')
-      const $emptyInternalTransactionsList = $('[data-selector="empty-internal-transactions-list"]')
-      const $emptyTransactionsList = $('[data-selector="empty-transactions-list"]')
-      const $internalTransactionsList = $('[data-selector="internal-transactions-list"]')
-      const $pendingTransactionsList = $('[data-selector="pending-transactions-list"]')
-      const $transactionCount = $('[data-selector="transaction-count"]')
-      const $transactionsList = $('[data-selector="transactions-list"]')
-      const $validationCount = $('[data-selector="validation-count"]')
-      const $validationsList = $('[data-selector="validations-list"]')
+let fetchedTokenBalanceBlockNumber = 0
+function loadTokenBalance (blockNumber) {
+  if (blockNumber > fetchedTokenBalanceBlockNumber) {
+    fetchedTokenBalanceBlockNumber = blockNumber
+    setTimeout(loadTokenBalanceDropdown, 1000)
+  } else if (fetchedTokenBalanceBlockNumber === 0 && blockNumber === null) {
+    setTimeout(loadTokenBalanceDropdown, 1000)
+  }
+}
 
-      if ($emptyInternalTransactionsList.length && state.newInternalTransactions.length) window.location.reload()
-      if ($emptyTransactionsList.length && state.newTransactions.length) window.location.reload()
-      if (state.channelDisconnected) $channelDisconnected.show()
-      if (oldState.balance !== state.balance) {
-        $balance.empty().append(state.balance)
-        loadTokenBalanceDropdown()
-        updateAllCalculatedUsdValues()
-      }
-      if (oldState.transactionCount !== state.transactionCount) $transactionCount.empty().append(numeral(state.transactionCount).format())
-      if (oldState.validationCount !== state.validationCount) $validationCount.empty().append(numeral(state.validationCount).format())
-      if (state.batchCountAccumulator) {
-        $channelBatching.show()
-        $channelBatchingCount[0].innerHTML = numeral(state.batchCountAccumulator).format()
-      } else {
-        $channelBatching.hide()
-      }
-      if (oldState.newPendingTransactionHashesBatch !== state.newPendingTransactionHashesBatch && state.newPendingTransactionHashesBatch.length > 0) {
-        $channelPendingBatching.show()
-        $channelPendingBatchingCount[0].innerHTML = numeral(state.newPendingTransactionHashesBatch.length).format()
-      } else {
-        $channelPendingBatching.hide()
-      }
-      if (oldState.newTransactionHashes !== state.newTransactionHashes && state.newTransactionHashes.length > 0) {
-        let $transaction
-        _.each(state.newTransactionHashes, (hash) => {
-          $transaction = $(`[data-selector="pending-transactions-list"] [data-transaction-hash="${hash}"]`)
-          $transaction.addClass('shrink-out')
-          setTimeout(() => $transaction.slideUp({ complete: () => $transaction.remove() }), 400)
-        })
-      }
-      if (oldState.newInternalTransactions !== state.newInternalTransactions && $internalTransactionsList.length) {
-        prependWithClingBottom($internalTransactionsList, state.newInternalTransactions.slice(oldState.newInternalTransactions.length).reverse().join(''))
-        updateAllAges()
-      }
-      if (oldState.newPendingTransactions !== state.newPendingTransactions && $pendingTransactionsList.length) {
-        prependWithClingBottom($pendingTransactionsList, state.newPendingTransactions.slice(oldState.newPendingTransactions.length).reverse().join(''))
-        updateAllAges()
-      }
-      if (oldState.newTransactions !== state.newTransactions && $transactionsList.length) {
-        prependWithClingBottom($transactionsList, state.newTransactions.slice(oldState.newTransactions.length).reverse().join(''))
-        updateAllAges()
-      }
-      if (oldState.newBlock !== state.newBlock) {
-        prependWithClingBottom($validationsList, state.newBlock)
-        updateAllAges()
+const elements = {
+  '[data-selector="channel-disconnected-message"]': {
+    render ($el, state) {
+      // @ts-ignore
+      if (state.channelDisconnected && !window.loading) $el.show()
+    }
+  },
+  '[data-selector="balance-card"]': {
+    load ($el) {
+      return { balanceCard: $el.html(), balance: parseFloat($el.find('.current-balance-in-wei').attr('data-wei-value')) }
+    },
+    render ($el, state, oldState) {
+      if (oldState.balance === state.balance || (isNaN(oldState.balance) && isNaN(state.balance))) return
+      $el.empty().append(state.balanceCard)
+      loadTokenBalance(state.fetchedCoinBalanceBlockNumber)
+      updateAllCalculatedUsdValues()
+    }
+  },
+  '[data-selector="transaction-count"]': {
+    load ($el) {
+      return { transactionCount: numeral($el.text()).value() }
+    },
+    render ($el, state, oldState) {
+      if (state.countersFetched) {
+        if (oldState.transactionCount === state.transactionCount) return
+        const transactionsDSName = (state.transactionCount === 1) ? ' Transaction' : ' Transactions'
+        $el.empty().append(numeral(state.transactionCount).format() + transactionsDSName)
       }
     }
+  },
+  '[data-selector="transfer-count"]': {
+    load ($el) {
+      return { tokenTransferCount: numeral($el.text()).value() }
+    },
+    render ($el, state, oldState) {
+      if (state.countersFetched) {
+        if (oldState.tokenTransferCount === state.tokenTransferCount) return
+        const transfersDSName = (state.tokenTransferCount === 1) ? ' Transfer' : ' Transfers'
+        $el.empty().append(numeral(state.tokenTransferCount).format() + transfersDSName)
+      }
+    }
+  },
+  '[data-selector="gas-usage-count"]': {
+    load ($el) {
+      return { gasUsageCount: numeral($el.text()).value() }
+    },
+    render ($el, state, oldState) {
+      if (state.countersFetched) {
+        if (oldState.gasUsageCount === state.gasUsageCount) return
+        $el.empty().append(numeral(state.gasUsageCount).format())
+      }
+    }
+  },
+  '[data-selector="fetched-coin-balance-block-number"]': {
+    load ($el) {
+      return { fetchedCoinBalanceBlockNumber: numeral($el.text()).value() }
+    },
+    render ($el, state, oldState) {
+      if (oldState.fetchedCoinBalanceBlockNumber === state.fetchedCoinBalanceBlockNumber) return
+      $el.empty().append(numeral(state.fetchedCoinBalanceBlockNumber).format())
+    }
+  },
+  '[data-selector="validation-count"]': {
+    load ($el) {
+      return { validationCount: numeral($el.text()).value() }
+    },
+    render ($el, state, oldState) {
+      if (state.countersFetched && state.validationCount) {
+        if (oldState.validationCount === state.validationCount) return
+        $el.empty().append(numeral(state.validationCount).format())
+        $('.address-validation-count-item').removeAttr('style')
+      } else {
+        $('.address-validation-count-item').css('display', 'none')
+      }
+    }
+  },
+  '[data-test="address-tokens-panel-crc-total-worth"]': {
+    load ($el) {
+      return { countersFetched: numeral($el.text()).value() }
+    },
+    render ($el, state, oldState) {
+      if (state.countersFetched && state.crcTotalWorth) {
+        if (oldState.crcTotalWorth === state.crcTotalWorth) return
+        $el.empty().append(`${state.crcTotalWorth} CRC`)
+        if (state.crcTotalWorth !== '0') {
+          $('[data-test="address-tokens-panel-crc-total-worth-container"]').removeClass('d-none')
+        } else {
+          $('[data-test="address-tokens-panel-crc-total-worth-container"]').addClass('d-none')
+        }
+      } else {
+        $('[data-test="address-tokens-panel-crc-total-worth-container"]').addClass('d-none')
+      }
+    }
+  },
+  '[data-selector="current-coin-balance"]': {
+    render ($el, state, oldState) {
+      if (!state.newBlockNumber || state.newBlockNumber <= oldState.newBlockNumber) return
+      $el.empty().append(state.currentCoinBalance)
+      updateAllCalculatedUsdValues()
+    }
+  },
+  '[data-selector="last-balance-update"]': {
+    render ($el, state, oldState) {
+      if (!state.newBlockNumber || state.newBlockNumber <= oldState.newBlockNumber) return
+      $el.empty().append(state.currentCoinBalanceBlockNumber)
+    }
+  },
+  '[data-last-balance-update]': {
+    load ($el) {
+      return { initialBlockNumber: numeral($el.data('last-balance-update')).value() }
+    }
+  },
+  '[data-selector="hidden-bytecode-warning"]': {
+    render ($el, state) {
+      if (state.isChangedBytecode) {
+        return $el.removeClass('d-none')
+      }
+    }
+  }
+}
+
+function loadCounters (store) {
+  const $element = $('[data-async-counters]')
+  const path = $element.data().asyncCounters
+
+  function fetchCounters () {
+    $.getJSON(path)
+      .done(response => store.dispatch(Object.assign({ type: 'COUNTERS_FETCHED' }, humps.camelizeKeys(response))))
+  }
+
+  fetchCounters()
+}
+
+const $addressDetailsPage = $('[data-page="address-details"]')
+if ($addressDetailsPage.length) {
+  const pathParts = window.location.pathname.split('/')
+  const shouldScroll = pathParts.includes('transactions') ||
+  pathParts.includes('token-transfers') ||
+  pathParts.includes('tokens') ||
+  pathParts.includes('internal-transactions') ||
+  pathParts.includes('coin-balances') ||
+  pathParts.includes('logs') ||
+  pathParts.includes('validations') ||
+  pathParts.includes('contracts') ||
+  pathParts.includes('decompiled-contracts') ||
+  pathParts.includes('read-contract') ||
+  pathParts.includes('read-proxy') ||
+  pathParts.includes('write-contract') ||
+  pathParts.includes('write-proxy')
+
+  if (shouldScroll) {
+    location.href = '#address-tabs'
+  }
+
+  window.onbeforeunload = () => {
+    // @ts-ignore
+    window.loading = true
+  }
+
+  const store = createStore(reducer)
+  const addressHash = $addressDetailsPage[0].dataset.pageAddressHash
+  // @ts-ignore
+  const { filter, blockNumber } = humps.camelizeKeys(URI(window.location).query(true))
+  store.dispatch({
+    type: 'PAGE_LOAD',
+    addressHash,
+    filter,
+    beyondPageOne: !!blockNumber
+  })
+  connectElements({ store, elements })
+
+  const addressChannel = subscribeChannel(`addresses:${addressHash}`)
+
+  addressChannel.onError(() => store.dispatch({
+    type: 'CHANNEL_DISCONNECTED'
+  }))
+  addressChannel.on('balance', (msg) => store.dispatch({
+    type: 'RECEIVED_UPDATED_BALANCE',
+    msg: humps.camelizeKeys(msg)
+  }))
+  addressChannel.on('token_balance', (msg) => loadTokenBalance(
+    msg.block_number
+  ))
+  addressChannel.on('transaction', (msg) => {
+    store.dispatch({
+      type: 'RECEIVED_NEW_TRANSACTION',
+      msg: humps.camelizeKeys(msg)
+    })
+  })
+  addressChannel.on('transfer', (msg) => {
+    store.dispatch({
+      type: 'RECEIVED_NEW_TOKEN_TRANSFER',
+      msg: humps.camelizeKeys(msg)
+    })
+  })
+  addressChannel.on('current_coin_balance', (msg) => {
+    store.dispatch({
+      type: 'RECEIVED_NEW_CURRENT_COIN_BALANCE',
+      msg: humps.camelizeKeys(msg)
+    })
+  })
+  addressChannel.on('changed_bytecode', () => {
+    store.dispatch({ type: 'RECEIVED_CHANGED_BYTECODE_EVENT' })
+  })
+
+  const blocksChannel = socket.channel(`blocks:${addressHash}`, {})
+  blocksChannel.join()
+  blocksChannel.onError(() => store.dispatch({
+    type: 'CHANNEL_DISCONNECTED'
+  }))
+  blocksChannel.on('new_block', (msg) => store.dispatch({
+    type: 'RECEIVED_NEW_BLOCK',
+    msg: humps.camelizeKeys(msg)
+  }))
+
+  // following lines causes double /token-balances request
+  // addressChannel.push('get_balance', {})
+  //   .receive('ok', (msg) => store.dispatch({
+  //     type: 'RECEIVED_UPDATED_BALANCE',
+  //     msg: humps.camelizeKeys(msg)
+  //   }))
+
+  loadCounters(store)
+
+  $('.btn-qr-icon').click(_event => {
+    openQrModal()
   })
 }

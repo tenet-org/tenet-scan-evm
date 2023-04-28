@@ -3,9 +3,11 @@ defmodule EthereumJSONRPC.HTTP do
   JSONRPC over HTTP
   """
 
-  alias EthereumJSONRPC.Transport
+  alias EthereumJSONRPC.{DecodeError, Transport, Utility.EndpointAvailabilityObserver}
 
   require Logger
+
+  import EthereumJSONRPC, only: [quantity_to_integer: 1]
 
   @behaviour Transport
 
@@ -25,8 +27,14 @@ defmodule EthereumJSONRPC.HTTP do
     http_options = Keyword.fetch!(options, :http_options)
 
     with {:ok, %{body: body, status_code: code}} <- http.json_rpc(url, json, http_options),
-         {:ok, json} <- decode_json(request: [url: url, body: json], response: [status_code: code, body: body]) do
-      handle_response(json, code)
+         {:ok, json} <- decode_json(request: [url: url, body: json], response: [status_code: code, body: body]),
+         {:ok, response} <- handle_response(json, code) do
+      {:ok, response}
+    else
+      error ->
+        named_arguments = [transport: __MODULE__, transport_options: Keyword.delete(options, :method_to_url)]
+        EndpointAvailabilityObserver.inc_error_count(url, named_arguments)
+        error
     end
   end
 
@@ -68,7 +76,12 @@ defmodule EthereumJSONRPC.HTTP do
           chunked_json_rpc(tail, options, [decoded_body | decoded_response_bodies])
         end
 
+      {:error, :timeout} ->
+        rechunk_json_rpc(chunks, options, :timeout, decoded_response_bodies)
+
       {:error, _} = error ->
+        named_arguments = [transport: __MODULE__, transport_options: Keyword.delete(options, :method_to_url)]
+        EndpointAvailabilityObserver.inc_error_count(url, named_arguments)
         error
     end
   end
@@ -109,7 +122,17 @@ defmodule EthereumJSONRPC.HTTP do
           {:error, {:bad_gateway, request_url}}
 
         _ ->
-          raise EthereumJSONRPC.DecodeError, named_arguments
+          named_arguments
+          |> DecodeError.exception()
+          |> DecodeError.message()
+          |> Logger.error()
+
+          request_url =
+            named_arguments
+            |> Keyword.fetch!(:request)
+            |> Keyword.fetch!(:url)
+
+          {:error, {:bad_response, request_url}}
       end
     end
   end
@@ -127,13 +150,16 @@ defmodule EthereumJSONRPC.HTTP do
 
   # restrict response to only those fields supported by the JSON-RPC 2.0 standard, which means that level of keys is
   # validated, so we can indicate that with switch to atom keys.
-  defp standardize_response(%{"jsonrpc" => "2.0" = jsonrpc, "id" => id} = unstandardized) do
+  def standardize_response(%{"jsonrpc" => "2.0" = jsonrpc, "id" => id} = unstandardized) do
+    # Nethermind return string ids
+    id = quantity_to_integer(id)
+
     standardized = %{jsonrpc: jsonrpc, id: id}
 
     case unstandardized do
       %{"result" => _, "error" => _} ->
         raise ArgumentError,
-              "result and error keys are mutually exclusive in JSONRPC 2.0 response objects, but got #{unstandardized}"
+              "result and error keys are mutually exclusive in JSONRPC 2.0 response objects, but got #{inspect(unstandardized)}"
 
       %{"result" => result} ->
         Map.put(standardized, :result, result)
@@ -145,8 +171,8 @@ defmodule EthereumJSONRPC.HTTP do
 
   # restrict error to only those fields supported by the JSON-RPC 2.0 standard, which means that level of keys is
   # validated, so we can indicate that with switch to atom keys.
-  defp standardize_error(%{"code" => code, "message" => message} = unstandardized)
-       when is_integer(code) and is_binary(message) do
+  def standardize_error(%{"code" => code, "message" => message} = unstandardized)
+      when is_integer(code) and is_binary(message) do
     standardized = %{code: code, message: message}
 
     case Map.fetch(unstandardized, "data") do
@@ -159,9 +185,12 @@ defmodule EthereumJSONRPC.HTTP do
     with {:ok, method_to_url} <- Keyword.fetch(options, :method_to_url),
          {:ok, method_atom} <- to_existing_atom(method),
          {:ok, url} <- Keyword.fetch(method_to_url, method_atom) do
-      url
+      EndpointAvailabilityObserver.maybe_replace_url(url, options[:fallback_trace_url])
     else
-      _ -> Keyword.fetch!(options, :url)
+      _ ->
+        options
+        |> Keyword.fetch!(:url)
+        |> EndpointAvailabilityObserver.maybe_replace_url(options[:fallback_url])
     end
   end
 

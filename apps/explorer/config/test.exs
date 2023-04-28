@@ -1,40 +1,49 @@
-use Mix.Config
+import Config
 
 # Lower hashing rounds for faster tests
 config :bcrypt_elixir, log_rounds: 4
 
 # Configure your database
 config :explorer, Explorer.Repo,
-  adapter: Ecto.Adapters.Postgres,
   database: "explorer_test",
   hostname: "localhost",
   pool: Ecto.Adapters.SQL.Sandbox,
   # Default of `5_000` was too low for `BlockFetcher` test
-  pool_timeout: 10_000,
-  ownership_timeout: 60_000
+  ownership_timeout: :timer.minutes(7),
+  timeout: :timer.seconds(60),
+  queue_target: 1000,
+  migration_lock: nil
 
-config :explorer, Explorer.ExchangeRates, enabled: false
+# Configure API database
+config :explorer, Explorer.Repo.Replica1,
+  database: "explorer_test",
+  hostname: "localhost",
+  pool: Ecto.Adapters.SQL.Sandbox,
+  # Default of `5_000` was too low for `BlockFetcher` test
+  ownership_timeout: :timer.minutes(1),
+  timeout: :timer.seconds(60),
+  queue_target: 1000,
+  enable_caching_implementation_data_of_proxy: true,
+  avg_block_time_as_ttl_cached_implementation_data_of_proxy: false,
+  fallback_ttl_cached_implementation_data_of_proxy: :timer.seconds(20),
+  implementation_data_fetching_timeout: :timer.seconds(20)
 
-config :explorer, Explorer.Market.History.Cataloger, enabled: false
+# Configure API database
+config :explorer, Explorer.Repo.Account,
+  database: "explorer_test_account",
+  hostname: "localhost",
+  pool: Ecto.Adapters.SQL.Sandbox,
+  # Default of `5_000` was too low for `BlockFetcher` test
+  ownership_timeout: :timer.minutes(1),
+  timeout: :timer.seconds(60),
+  queue_target: 1000
 
 config :logger, :explorer,
   level: :warn,
   path: Path.absname("logs/test/explorer.log")
 
-if File.exists?(file = "test.secret.exs") do
-  import_config file
-end
+config :explorer, Explorer.ExchangeRates.Source.TransactionAndLog,
+  secondary_source: Explorer.ExchangeRates.Source.OneCoinSource
 
-variant =
-  if is_nil(System.get_env("ETHEREUM_JSONRPC_VARIANT")) do
-    "parity"
-  else
-    System.get_env("ETHEREUM_JSONRPC_VARIANT")
-    |> String.split(".")
-    |> List.last()
-    |> String.downcase()
-  end
-
-# Import variant specific config. This must remain at the bottom
-# of this file so it overrides the configuration defined above.
-import_config "test/#{variant}.exs"
+config :explorer, Explorer.Chain.Fetcher.CheckBytecodeMatchingOnDemand, enabled: false
+config :explorer, Explorer.Chain.Fetcher.FetchValidatorInfoOnDemand, enabled: false

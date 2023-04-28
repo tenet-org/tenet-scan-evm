@@ -1,18 +1,18 @@
 {
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/poanetwork/blockscout.git"
+    "url": "git+https://github.com/blockscout/blockscout.git"
   },
   "private": true,
   "name": "blockscout",
-  "author": "POA Network",
+  "author": "Blockscout",
   "license": "GPL-3.0",
   "engines": {
-    "node": "9.x",
-    "npm": "5.x"
+    "node": "18.x",
+    "npm": "8.x"
   },
   "scripts": {},
   "dependencies": {
-    "solc-js": "^0.4.20-browser.1"
+    "solc": "0.8.19"
   }
 }

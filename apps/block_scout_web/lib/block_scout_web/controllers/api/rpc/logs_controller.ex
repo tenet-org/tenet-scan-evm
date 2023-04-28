@@ -1,7 +1,7 @@
 defmodule BlockScoutWeb.API.RPC.LogsController do
   use BlockScoutWeb, :controller
 
-  alias Explorer.{Etherscan, Chain}
+  alias Explorer.{Chain, Etherscan}
 
   def getlogs(conn, params) do
     with {:required_params, {:ok, fetched_params}} <- fetch_required_params(params),
@@ -183,7 +183,7 @@ defmodule BlockScoutWeb.API.RPC.LogsController do
   defp to_block_number(params, param_key) do
     case params[param_key] do
       "latest" ->
-        Chain.max_block_number()
+        Chain.max_consensus_block_number()
 
       _ ->
         to_integer(params, param_key)

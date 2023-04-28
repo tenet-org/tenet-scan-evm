@@ -2,6 +2,7 @@ defmodule BlockScoutWeb.AddressTokenBalanceViewTest do
   use BlockScoutWeb.ConnCase, async: true
 
   alias BlockScoutWeb.AddressTokenBalanceView
+  alias Explorer.Chain
 
   describe "tokens_count_title/1" do
     test "returns the title pluralized" do
@@ -19,53 +20,50 @@ defmodule BlockScoutWeb.AddressTokenBalanceViewTest do
       token_balance_a = build(:token_balance, token: build(:token, type: "ERC-20"))
       token_balance_b = build(:token_balance, token: build(:token, type: "ERC-721"))
 
-      token_balances = [token_balance_a, token_balance_b]
+      token_balances = [{token_balance_a, token_balance_a.token}, {token_balance_b, token_balance_b.token}]
 
-      assert AddressTokenBalanceView.filter_by_type(token_balances, "ERC-20") == [token_balance_a]
+      assert AddressTokenBalanceView.filter_by_type(token_balances, "ERC-20") == [
+               {token_balance_a, token_balance_a.token}
+             ]
     end
   end
 
-  describe "sort_by_name/1" do
-    test "sorts the given tokens by its name" do
-      token_balance_a = build(:token_balance, token: build(:token, name: "token name"))
-      token_balance_b = build(:token_balance, token: build(:token, name: "token"))
-      token_balance_c = build(:token_balance, token: build(:token, name: "atoken"))
+  describe "balance_in_fiat/1" do
+    test "return balance in fiat" do
+      token =
+        :token
+        |> build(decimals: Decimal.new(0))
+        |> Map.put(:fiat_value, Decimal.new(3))
 
-      token_balances = [
-        token_balance_a,
-        token_balance_b,
-        token_balance_c
-      ]
+      token_balance = build(:token_balance, value: Decimal.new(10), token: token)
 
-      expected = [token_balance_c, token_balance_b, token_balance_a]
+      result = Chain.balance_in_fiat(token_balance)
 
-      assert AddressTokenBalanceView.sort_by_name(token_balances) == expected
+      assert Decimal.compare(result, 30) == :eq
     end
 
-    test "considers nil values in the bottom of the list" do
-      token_balance_a = build(:token_balance, token: build(:token, name: nil))
-      token_balance_b = build(:token_balance, token: build(:token, name: "token name"))
-      token_balance_c = build(:token_balance, token: build(:token, name: "token"))
+    test "return nil if fiat_value is not present" do
+      token =
+        :token
+        |> build(decimals: Decimal.new(0))
+        |> Map.put(:fiat_value, nil)
 
-      token_balances = [
-        token_balance_a,
-        token_balance_b,
-        token_balance_c
-      ]
+      token_balance = build(:token_balance, value: 10, token: token)
 
-      expected = [token_balance_c, token_balance_b, token_balance_a]
-
-      assert AddressTokenBalanceView.sort_by_name(token_balances) == expected
+      assert Chain.balance_in_fiat(token_balance) == nil
     end
 
-    test "considers capitalization" do
-      token_balance_a = build(:token_balance, token: build(:token, name: "Token"))
-      token_balance_b = build(:token_balance, token: build(:token, name: "atoken"))
+    test "consider decimals when computing value" do
+      token =
+        :token
+        |> build(decimals: Decimal.new(2))
+        |> Map.put(:fiat_value, Decimal.new(3))
 
-      token_balances = [token_balance_a, token_balance_b]
-      expected = [token_balance_b, token_balance_a]
+      token_balance = build(:token_balance, value: Decimal.new(10), token: token)
 
-      assert AddressTokenBalanceView.sort_by_name(token_balances) == expected
+      result = Chain.balance_in_fiat(token_balance)
+
+      assert Decimal.compare(result, Decimal.from_float(0.3)) == :eq
     end
   end
 end

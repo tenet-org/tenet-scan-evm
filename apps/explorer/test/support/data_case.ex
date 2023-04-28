@@ -34,10 +34,21 @@ defmodule Explorer.DataCase do
     ExVCR.Config.cassette_library_dir("test/support/fixture/vcr_cassettes")
 
     :ok = Ecto.Adapters.SQL.Sandbox.checkout(Explorer.Repo)
+    :ok = Ecto.Adapters.SQL.Sandbox.checkout(Explorer.Repo.Account)
 
     unless tags[:async] do
       Ecto.Adapters.SQL.Sandbox.mode(Explorer.Repo, {:shared, self()})
+      Ecto.Adapters.SQL.Sandbox.mode(Explorer.Repo.Account, {:shared, self()})
     end
+
+    Supervisor.terminate_child(Explorer.Supervisor, Explorer.Chain.Cache.BlockNumber.child_id())
+    Supervisor.restart_child(Explorer.Supervisor, Explorer.Chain.Cache.BlockNumber.child_id())
+    Supervisor.terminate_child(Explorer.Supervisor, Explorer.Chain.Cache.Blocks.child_id())
+    Supervisor.restart_child(Explorer.Supervisor, Explorer.Chain.Cache.Blocks.child_id())
+    Supervisor.terminate_child(Explorer.Supervisor, Explorer.Chain.Cache.Transactions.child_id())
+    Supervisor.restart_child(Explorer.Supervisor, Explorer.Chain.Cache.Transactions.child_id())
+    Supervisor.terminate_child(Explorer.Supervisor, Explorer.Chain.Cache.Accounts.child_id())
+    Supervisor.restart_child(Explorer.Supervisor, Explorer.Chain.Cache.Accounts.child_id())
 
     :ok
   end
@@ -45,18 +56,7 @@ defmodule Explorer.DataCase do
   def wait_for_results(producer) do
     producer.()
   rescue
-    Ecto.NoResultsError ->
-      Process.sleep(100)
-      wait_for_results(producer)
-  catch
-    :exit,
-    {:timeout,
-     {GenServer, :call,
-      [
-        _,
-        {:checkout, _, _, _},
-        _
-      ]}} ->
+    [DBConnection.ConnectionError, Ecto.NoResultsError] ->
       Process.sleep(100)
       wait_for_results(producer)
   end

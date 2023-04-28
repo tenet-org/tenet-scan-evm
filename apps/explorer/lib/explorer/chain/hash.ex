@@ -4,6 +4,7 @@ defmodule Explorer.Chain.Hash do
   """
 
   import Bitwise
+  alias Poison.Encoder.BitString
 
   @bits_per_byte 8
   @hexadecimal_digits_per_byte 2
@@ -47,6 +48,9 @@ defmodule Explorer.Chain.Hash do
     case term do
       %__MODULE__{byte_count: ^byte_count, bytes: <<_::big-integer-size(byte_count)-unit(@bits_per_byte)>>} = cast ->
         {:ok, cast}
+
+      <<_::big-integer-size(byte_count)-unit(@bits_per_byte)>> ->
+        {:ok, %__MODULE__{byte_count: byte_count, bytes: term}}
 
       <<"0x", hexadecimal_digits::binary>> ->
         cast_hexadecimal_digits(hexadecimal_digits, byte_count)
@@ -219,6 +223,24 @@ defmodule Explorer.Chain.Hash do
   defimpl String.Chars do
     def to_string(hash) do
       @for.to_string(hash)
+    end
+  end
+
+  defimpl Poison.Encoder do
+    def encode(hash, options) do
+      hash
+      |> to_string()
+      |> BitString.encode(options)
+    end
+  end
+
+  defimpl Jason.Encoder do
+    alias Jason.Encode
+
+    def encode(hash, opts) do
+      hash
+      |> to_string()
+      |> Encode.string(opts)
     end
   end
 end

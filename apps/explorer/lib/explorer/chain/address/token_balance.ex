@@ -1,17 +1,17 @@
 defmodule Explorer.Chain.Address.TokenBalance do
   @moduledoc """
   Represents a token balance from an address.
+
+  In this table we can see all token balances that a specific addresses had according to the block
+  numbers. If you want to show only the last balance from an address, consider querying against
+  `Address.CurrentTokenBalance` instead.
   """
 
-  use Ecto.Schema
-  import Ecto.Changeset
-  import Ecto.Query, only: [from: 2, limit: 2, where: 3, subquery: 1, order_by: 3, preload: 2]
+  use Explorer.Schema
 
-  alias Explorer.{Chain, PagingOptions}
+  alias Explorer.Chain
   alias Explorer.Chain.Address.TokenBalance
   alias Explorer.Chain.{Address, Block, Hash, Token}
-
-  @default_paging_options %PagingOptions{page_size: 50}
 
   @typedoc """
    *  `address` - The `t:Explorer.Chain.Address.t/0` that is the balance's owner.
@@ -20,6 +20,8 @@ defmodule Explorer.Chain.Address.TokenBalance do
    *  `token_contract_address_hash` - The contract address hash foreign key.
    *  `block_number` - The block's number that the transfer took place.
    *  `value` - The value that's represents the balance.
+   *  `token_id` - The token_id of the transferred token (applicable for ERC-1155 and ERC-721 tokens)
+   *  `token_type` - The type of the token
   """
   @type t :: %__MODULE__{
           address: %Ecto.Association.NotLoaded{} | Address.t(),
@@ -29,13 +31,17 @@ defmodule Explorer.Chain.Address.TokenBalance do
           block_number: Block.block_number(),
           inserted_at: DateTime.t(),
           updated_at: DateTime.t(),
-          value: Decimal.t() | nil
+          value: Decimal.t() | nil,
+          token_id: non_neg_integer() | nil,
+          token_type: String.t()
         }
 
   schema "address_token_balances" do
     field(:value, :decimal)
     field(:block_number, :integer)
-    field(:value_fetched_at, :utc_datetime)
+    field(:value_fetched_at, :utc_datetime_usec)
+    field(:token_id, :decimal)
+    field(:token_type, :string)
 
     belongs_to(:address, Address, foreign_key: :address_hash, references: :hash, type: Hash.Address)
 
@@ -50,8 +56,8 @@ defmodule Explorer.Chain.Address.TokenBalance do
     timestamps()
   end
 
-  @optional_fields ~w(value value_fetched_at)a
-  @required_fields ~w(address_hash block_number token_contract_address_hash)a
+  @optional_fields ~w(value value_fetched_at token_id)a
+  @required_fields ~w(address_hash block_number token_contract_address_hash token_type)a
   @allowed_fields @optional_fields ++ @required_fields
 
   @doc false
@@ -64,79 +70,13 @@ defmodule Explorer.Chain.Address.TokenBalance do
     |> unique_constraint(:block_number, name: :token_balances_address_hash_block_number_index)
   end
 
-  @doc """
-  Builds an `Ecto.Query` to fetch the last token balances that have value greater than 0.
-
-  The last token balances from an Address is the last block indexed.
-  """
-  def last_token_balances(address_hash) do
-    query =
-      from(
-        tb in TokenBalance,
-        where: tb.address_hash == ^address_hash,
-        distinct: :token_contract_address_hash,
-        order_by: [desc: :block_number]
-      )
-
-    from(tb in subquery(query), where: tb.value > 0, preload: :token)
-  end
-
-  @doc """
-  Builds an `Ecto.Query` to fetch the token holders from the given token contract address hash.
-
-  The Token Holders are the addresses that own a positive amount of the Token. So this query is
-  considering the following conditions:
-
-  * The token balance from the last block.
-  * Balances greater than 0.
-  * Excluding the burn address (0x0000000000000000000000000000000000000000).
-
-  """
-  def token_holders_from_token_hash(token_contract_address_hash) do
-    query = token_holders_query(token_contract_address_hash)
-
-    from(tb in subquery(query), where: tb.value > 0)
-  end
-
-  def token_holders_ordered_by_value(token_contract_address_hash, options) do
-    paging_options = Keyword.get(options, :paging_options, @default_paging_options)
-
-    token_contract_address_hash
-    |> token_holders_from_token_hash()
-    |> order_by([tb], desc: tb.value, desc: tb.address_hash)
-    |> preload(:address)
-    |> page_token_balances(paging_options)
-    |> limit(^paging_options.page_size)
-  end
-
-  defp token_holders_query(contract_address_hash) do
-    {:ok, burn_address_hash} = Chain.string_to_address_hash("0x0000000000000000000000000000000000000000")
-
-    from(
-      tb in TokenBalance,
-      distinct: :address_hash,
-      where: tb.token_contract_address_hash == ^contract_address_hash and tb.address_hash != ^burn_address_hash,
-      order_by: [desc: :block_number]
-    )
-  end
-
-  defp page_token_balances(query, %PagingOptions{key: nil}), do: query
-
-  defp page_token_balances(query, %PagingOptions{key: {value, address_hash}}) do
-    where(
-      query,
-      [tb],
-      tb.value < ^value or (tb.value == ^value and tb.address_hash < ^address_hash)
-    )
-  end
-
   {:ok, burn_address_hash} = Chain.string_to_address_hash("0x0000000000000000000000000000000000000000")
   @burn_address_hash burn_address_hash
 
   @doc """
   Builds an `Ecto.Query` to fetch the unfetched token balances.
 
-  Unfetched token balances are the ones that have the column `value_fetched_at` nil. This query also
+  Unfetched token balances are the ones that have the column `value_fetched_at` nil or the value is null. This query also
   ignores the burn_address for tokens ERC-721 since the most tokens ERC-721 don't allow get the
   balance for burn_address.
   """
@@ -145,8 +85,23 @@ defmodule Explorer.Chain.Address.TokenBalance do
       tb in TokenBalance,
       join: t in Token,
       on: tb.token_contract_address_hash == t.contract_address_hash,
-      where: is_nil(tb.value_fetched_at),
-      where: (tb.address_hash != ^@burn_address_hash and t.type != "ERC-721") or t.type == "ERC-20"
+      where:
+        ((tb.address_hash != ^@burn_address_hash and t.type == "ERC-721") or t.type == "ERC-20" or t.type == "ERC-1155") and
+          (is_nil(tb.value_fetched_at) or is_nil(tb.value))
+    )
+  end
+
+  @doc """
+  Builds an `Ecto.Query` to fetch the token balance of the given token contract hash of the given address in the given block.
+  """
+  def fetch_token_balance(address_hash, token_contract_address_hash, block_number) do
+    from(
+      tb in TokenBalance,
+      where: tb.address_hash == ^address_hash,
+      where: tb.token_contract_address_hash == ^token_contract_address_hash,
+      where: tb.block_number <= ^block_number,
+      limit: ^1,
+      order_by: [desc: :block_number]
     )
   end
 end

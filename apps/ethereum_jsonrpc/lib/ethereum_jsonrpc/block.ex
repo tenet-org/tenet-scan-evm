@@ -11,17 +11,25 @@ defmodule EthereumJSONRPC.Block do
   @type elixir :: %{String.t() => non_neg_integer | DateTime.t() | String.t() | nil}
   @type params :: %{
           difficulty: pos_integer(),
+          extra_data: EthereumJSONRPC.hash(),
           gas_limit: non_neg_integer(),
           gas_used: non_neg_integer(),
           hash: EthereumJSONRPC.hash(),
+          logs_bloom: EthereumJSONRPC.hash(),
           miner_hash: EthereumJSONRPC.hash(),
+          mix_hash: EthereumJSONRPC.hash(),
           nonce: EthereumJSONRPC.hash(),
           number: non_neg_integer(),
           parent_hash: EthereumJSONRPC.hash(),
+          receipts_root: EthereumJSONRPC.hash(),
+          sha3_uncles: EthereumJSONRPC.hash(),
           size: non_neg_integer(),
+          state_root: EthereumJSONRPC.hash(),
           timestamp: DateTime.t(),
           total_difficulty: non_neg_integer(),
-          uncles: [EthereumJSONRPC.hash()]
+          transactions_root: EthereumJSONRPC.hash(),
+          uncles: [EthereumJSONRPC.hash()],
+          base_fee_per_gas: non_neg_integer()
         }
 
   @typedoc """
@@ -58,8 +66,28 @@ defmodule EthereumJSONRPC.Block do
    * `uncles`: `t:list/0` of
      [uncles](https://bitcoin.stackexchange.com/questions/39329/in-ethereum-what-is-an-uncle-block)
      `t:EthereumJSONRPC.hash/0`.
+   * `"baseFeePerGas"` - `t:EthereumJSONRPC.quantity/0` of wei to denote amount of fee burned per unit gas used. Introduced in [EIP-1559](https://github.com/ethereum/EIPs/blob/master/EIPS/eip-1559.md)
   """
   @type t :: %{String.t() => EthereumJSONRPC.data() | EthereumJSONRPC.hash() | EthereumJSONRPC.quantity() | nil}
+
+  def from_response(%{id: id, result: nil}, id_to_params) when is_map(id_to_params) do
+    params = Map.fetch!(id_to_params, id)
+
+    {:error, %{code: 404, message: "Not Found", data: params}}
+  end
+
+  def from_response(%{id: id, result: block}, id_to_params) when is_map(id_to_params) do
+    true = Map.has_key?(id_to_params, id)
+
+    {:ok, block}
+  end
+
+  def from_response(%{id: id, error: error}, id_to_params) when is_map(id_to_params) do
+    params = Map.fetch!(id_to_params, id)
+    annotated_error = Map.put(error, :data, params)
+
+    {:error, annotated_error}
+  end
 
   @doc """
   Converts `t:elixir/0` format to params used in `Explorer.Chain`.
@@ -95,16 +123,23 @@ defmodule EthereumJSONRPC.Block do
       ...> )
       %{
         difficulty: 340282366920938463463374607431465537093,
+        extra_data: "0xd5830108048650617269747986312e32322e31826c69",
         gas_limit: 6706541,
         gas_used: 0,
         hash: "0x52c867bc0a91e573dc39300143c3bead7408d09d45bdb686749f02684ece72f3",
+        logs_bloom: "0x00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
         miner_hash: "0xe8ddc5c7a2d2f0d7a9798459c0104fdf5e987aca",
+        mix_hash: "0x0",
         nonce: 0,
         number: 1,
         parent_hash: "0x5b28c1bfd3a15230c9a46b399cd0f9a6920d432e85381cc6a140b06e8410112f",
+        receipts_root: "0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421",
+        sha3_uncles: "0x1dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d49347",
         size: 576,
+        state_root: "0xc196ad59d867542ef20b29df5f418d07dc7234f4bc3d25260526620b7958a8fb",
         timestamp: Timex.parse!("2017-12-15T21:03:30Z", "{ISO:Extended:Z}"),
         total_difficulty: 340282366920938463463374607431465668165,
+        transactions_root: "0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421",
         uncles: []
       }
 
@@ -136,16 +171,23 @@ defmodule EthereumJSONRPC.Block do
       ...> )
       %{
         difficulty: 17561410778,
+        extra_data: "0x476574682f4c5649562f76312e302e302f6c696e75782f676f312e342e32",
         gas_limit: 5000,
         gas_used: 0,
         hash: "0x4d9423080290a650eaf6db19c87c76dff83d1b4ab64aefe6e5c5aa2d1f4b6623",
+        logs_bloom: "0x00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+        mix_hash: "0xbbb93d610b2b0296a59f18474ac3d6086a9902aa7ca4b9a306692f7c3d496fdf",
         miner_hash: "0xbb7b8287f3f0a933474a79eae42cbca977791171",
         nonce: 5539500215739777653,
         number: 59,
         parent_hash: "0xcd5b5c4cecd7f18a13fe974255badffd58e737dc67596d56bc01f063dd282e9e",
+        receipts_root: "0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421",
+        sha3_uncles: "0x1dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d49347",
         size: 542,
+        state_root: "0x6fd0a5d82ca77d9f38c3ebbde11b11d304a5fcf3854f291df64395ab38ed43ba",
         timestamp: Timex.parse!("2015-07-30T15:32:07Z", "{ISO:Extended:Z}"),
         total_difficulty: 1039309006117,
+        transactions_root: "0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421",
         uncles: []
       }
 
@@ -154,30 +196,176 @@ defmodule EthereumJSONRPC.Block do
   def elixir_to_params(
         %{
           "difficulty" => difficulty,
+          "extraData" => extra_data,
           "gasLimit" => gas_limit,
           "gasUsed" => gas_used,
           "hash" => hash,
+          "logsBloom" => logs_bloom,
           "miner" => miner_hash,
           "number" => number,
           "parentHash" => parent_hash,
+          "receiptsRoot" => receipts_root,
+          "sha3Uncles" => sha3_uncles,
           "size" => size,
+          "stateRoot" => state_root,
           "timestamp" => timestamp,
           "totalDifficulty" => total_difficulty,
+          "transactionsRoot" => transactions_root,
+          "uncles" => uncles,
+          "baseFeePerGas" => base_fee_per_gas
+        } = elixir
+      ) do
+    %{
+      difficulty: difficulty,
+      extra_data: extra_data,
+      gas_limit: gas_limit,
+      gas_used: gas_used,
+      hash: hash,
+      logs_bloom: logs_bloom,
+      miner_hash: miner_hash,
+      mix_hash: Map.get(elixir, "mixHash", "0x0"),
+      nonce: Map.get(elixir, "nonce", 0),
+      number: number,
+      parent_hash: parent_hash,
+      receipts_root: receipts_root,
+      sha3_uncles: sha3_uncles,
+      size: size,
+      state_root: state_root,
+      timestamp: timestamp,
+      total_difficulty: total_difficulty,
+      transactions_root: transactions_root,
+      uncles: uncles,
+      base_fee_per_gas: base_fee_per_gas
+    }
+  end
+
+  def elixir_to_params(
+        %{
+          "difficulty" => difficulty,
+          "extraData" => extra_data,
+          "gasLimit" => gas_limit,
+          "gasUsed" => gas_used,
+          "hash" => hash,
+          "logsBloom" => logs_bloom,
+          "miner" => miner_hash,
+          "number" => number,
+          "parentHash" => parent_hash,
+          "receiptsRoot" => receipts_root,
+          "sha3Uncles" => sha3_uncles,
+          "size" => size,
+          "stateRoot" => state_root,
+          "timestamp" => timestamp,
+          "transactionsRoot" => transactions_root,
+          "uncles" => uncles,
+          "baseFeePerGas" => base_fee_per_gas
+        } = elixir
+      ) do
+    %{
+      difficulty: difficulty,
+      extra_data: extra_data,
+      gas_limit: gas_limit,
+      gas_used: gas_used,
+      hash: hash,
+      logs_bloom: logs_bloom,
+      miner_hash: miner_hash,
+      mix_hash: Map.get(elixir, "mixHash", "0x0"),
+      nonce: Map.get(elixir, "nonce", 0),
+      number: number,
+      parent_hash: parent_hash,
+      receipts_root: receipts_root,
+      sha3_uncles: sha3_uncles,
+      size: size,
+      state_root: state_root,
+      timestamp: timestamp,
+      transactions_root: transactions_root,
+      uncles: uncles,
+      base_fee_per_gas: base_fee_per_gas
+    }
+  end
+
+  def elixir_to_params(
+        %{
+          "difficulty" => difficulty,
+          "extraData" => extra_data,
+          "gasLimit" => gas_limit,
+          "gasUsed" => gas_used,
+          "hash" => hash,
+          "logsBloom" => logs_bloom,
+          "miner" => miner_hash,
+          "number" => number,
+          "parentHash" => parent_hash,
+          "receiptsRoot" => receipts_root,
+          "sha3Uncles" => sha3_uncles,
+          "size" => size,
+          "stateRoot" => state_root,
+          "timestamp" => timestamp,
+          "totalDifficulty" => total_difficulty,
+          "transactionsRoot" => transactions_root,
           "uncles" => uncles
         } = elixir
       ) do
     %{
       difficulty: difficulty,
+      extra_data: extra_data,
       gas_limit: gas_limit,
       gas_used: gas_used,
       hash: hash,
+      logs_bloom: logs_bloom,
       miner_hash: miner_hash,
+      mix_hash: Map.get(elixir, "mixHash", "0x0"),
       nonce: Map.get(elixir, "nonce", 0),
       number: number,
       parent_hash: parent_hash,
+      receipts_root: receipts_root,
+      sha3_uncles: sha3_uncles,
       size: size,
+      state_root: state_root,
       timestamp: timestamp,
       total_difficulty: total_difficulty,
+      transactions_root: transactions_root,
+      uncles: uncles
+    }
+  end
+
+  # Geth: a response from eth_getblockbyhash for uncle blocks is without `totalDifficulty` param
+  def elixir_to_params(
+        %{
+          "difficulty" => difficulty,
+          "extraData" => extra_data,
+          "gasLimit" => gas_limit,
+          "gasUsed" => gas_used,
+          "hash" => hash,
+          "logsBloom" => logs_bloom,
+          "miner" => miner_hash,
+          "number" => number,
+          "parentHash" => parent_hash,
+          "receiptsRoot" => receipts_root,
+          "sha3Uncles" => sha3_uncles,
+          "size" => size,
+          "stateRoot" => state_root,
+          "timestamp" => timestamp,
+          "transactionsRoot" => transactions_root,
+          "uncles" => uncles
+        } = elixir
+      ) do
+    %{
+      difficulty: difficulty,
+      extra_data: extra_data,
+      gas_limit: gas_limit,
+      gas_used: gas_used,
+      hash: hash,
+      logs_bloom: logs_bloom,
+      miner_hash: miner_hash,
+      mix_hash: Map.get(elixir, "mixHash", "0x0"),
+      nonce: Map.get(elixir, "nonce", 0),
+      number: number,
+      parent_hash: parent_hash,
+      receipts_root: receipts_root,
+      sha3_uncles: sha3_uncles,
+      size: size,
+      state_root: state_root,
+      timestamp: timestamp,
+      transactions_root: transactions_root,
       uncles: uncles
     }
   end
@@ -266,6 +454,8 @@ defmodule EthereumJSONRPC.Block do
   @spec elixir_to_transactions(elixir) :: Transactions.elixir()
   def elixir_to_transactions(%{"transactions" => transactions}), do: transactions
 
+  def elixir_to_transactions(_), do: []
+
   @doc """
   Get `t:EthereumJSONRPC.Uncles.elixir/0` from `t:elixir/0`.
 
@@ -303,14 +493,17 @@ defmodule EthereumJSONRPC.Block do
       [
         %{
           "hash" => "0xe670ec64341771606e55d6b4ca35a1a6b75ee3d5145a99d05921026d15273311",
-          "nephewHash" => "0xe52d77084cab13a4e724162bcd8c6028e5ecfaa04d091ee476e96b9958ed6b47"
+          "nephewHash" => "0xe52d77084cab13a4e724162bcd8c6028e5ecfaa04d091ee476e96b9958ed6b47",
+          "index" => 0
         }
       ]
 
   """
   @spec elixir_to_uncles(elixir) :: Uncles.elixir()
   def elixir_to_uncles(%{"hash" => nephew_hash, "uncles" => uncles}) do
-    Enum.map(uncles, &%{"hash" => &1, "nephewHash" => nephew_hash})
+    uncles
+    |> Enum.with_index()
+    |> Enum.map(fn {uncle_hash, index} -> %{"hash" => uncle_hash, "nephewHash" => nephew_hash, "index" => index} end)
   end
 
   @doc """
@@ -378,8 +571,15 @@ defmodule EthereumJSONRPC.Block do
     Enum.into(block, %{}, &entry_to_elixir/1)
   end
 
-  defp entry_to_elixir({key, quantity}) when key in ~w(difficulty gasLimit gasUsed number size totalDifficulty) do
+  defp entry_to_elixir({key, quantity})
+       when key in ~w(difficulty gasLimit gasUsed minimumGasPrice baseFeePerGas number size cumulativeDifficulty totalDifficulty paidFees) and
+              not is_nil(quantity) do
     {key, quantity_to_integer(quantity)}
+  end
+
+  # Size and totalDifficulty may be `nil` for uncle blocks
+  defp entry_to_elixir({key, nil}) when key in ~w(size totalDifficulty) do
+    {key, nil}
   end
 
   # double check that no new keys are being missed by requiring explicit match for passthrough
@@ -396,5 +596,20 @@ defmodule EthereumJSONRPC.Block do
 
   defp entry_to_elixir({"transactions" = key, transactions}) do
     {key, Transactions.to_elixir(transactions)}
+  end
+
+  # Arbitrum fields
+  defp entry_to_elixir({"l1BlockNumber", _}) do
+    {:ignore, :ignore}
+  end
+
+  # bitcoinMergedMiningCoinbaseTransaction bitcoinMergedMiningHeader bitcoinMergedMiningMerkleProof hashForMergedMining - RSK https://github.com/blockscout/blockscout/pull/2934
+  # committedSeals committee pastCommittedSeals proposerSeal round - Autonity network https://github.com/blockscout/blockscout/pull/3480
+  # blockGasCost extDataGasUsed - sgb/ava https://github.com/blockscout/blockscout/pull/5301
+  # blockExtraData extDataHash - Avalanche https://github.com/blockscout/blockscout/pull/5348
+  # vrf vrfProof - Harmony
+  # ...
+  defp entry_to_elixir({_, _}) do
+    {:ignore, :ignore}
   end
 end

@@ -1,12 +1,24 @@
-use Mix.Config
+import Config
+
+~w(config config_helper.exs)
+|> Path.join()
+|> Code.eval_file()
+
+hackney_opts = ConfigHelper.hackney_options()
+timeout = ConfigHelper.timeout(1)
 
 config :explorer,
   json_rpc_named_arguments: [
     transport: EthereumJSONRPC.HTTP,
     transport_options: [
       http: EthereumJSONRPC.HTTP.HTTPoison,
-      url: System.get_env("ETHEREUM_JSONRPC_HTTP_URL") || "https://mainnet.infura.io/8lTvJTKmHPCHazkneJsY",
-      http_options: [recv_timeout: 60_000, timeout: 60_000, hackney: [pool: :ethereum_jsonrpc]]
+      url: System.get_env("ETHEREUM_JSONRPC_HTTP_URL"),
+      fallback_url: System.get_env("ETHEREUM_JSONRPC_FALLBACK_HTTP_URL"),
+      fallback_trace_url: System.get_env("ETHEREUM_JSONRPC_FALLBACK_TRACE_URL"),
+      method_to_url: [
+        debug_traceTransaction: System.get_env("ETHEREUM_JSONRPC_TRACE_URL")
+      ],
+      http_options: [recv_timeout: timeout, timeout: timeout, hackney: hackney_opts]
     ],
     variant: EthereumJSONRPC.Geth
   ],
@@ -14,7 +26,7 @@ config :explorer,
     transport: EthereumJSONRPC.WebSocket,
     transport_options: [
       web_socket: EthereumJSONRPC.WebSocket.WebSocketClient,
-      url: System.get_env("ETHEREUM_JSONRPC_HTTP_URL") || "wss://mainnet.infura.io/8lTvJTKmHPCHazkneJsY/ws"
+      url: System.get_env("ETHEREUM_JSONRPC_WS_URL")
     ],
     variant: EthereumJSONRPC.Geth
   ]

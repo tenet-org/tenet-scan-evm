@@ -3,10 +3,11 @@ defmodule Explorer.Chain.InternalTransaction do
 
   use Explorer.Schema
 
-  alias Explorer.Chain.{Address, Data, Gas, Hash, Transaction, Wei}
-  alias Explorer.Chain.InternalTransaction.{CallType, Type}
+  alias Explorer.Chain.{Address, Block, Data, Gas, Hash, PendingBlockOperation, Transaction, Wei}
+  alias Explorer.Chain.InternalTransaction.{Action, CallType, Result, Type}
 
   @typedoc """
+   * `block_number` - the `t:Explorer.Chain.Block.t/0` `number` that the `transaction` is collated into.
    * `call_type` - the type of call.  `nil` when `type` is not `:call`.
    * `created_contract_code` - the code of the contract that was created when `type` is `:create`.
    * `error` - error message when `:call` or `:create` `type` errors
@@ -21,47 +22,60 @@ defmodule Explorer.Chain.InternalTransaction do
    * `to_address` - the sink of the `value`
    * `to_address_hash` - hash of the sink of the `value`
    * `trace_address` - list of traces
-   * `transaction` - transaction in which this transaction occurred
+   * `transaction` - transaction in which this internal transaction occurred
    * `transaction_hash` - foreign key for `transaction`
+   * `transaction_index` - the `t:Explorer.Chain.Transaction.t/0` `index` of `transaction` in `block_number`.
    * `type` - type of internal transaction
    * `value` - value of transferred from `from_address` to `to_address`
+   * `block` - block in which this internal transaction occurred
+   * `block_hash` - foreign key for `block`
+   * `block_index` - the index of this internal transaction inside the `block`
+   * `pending_block` - `nil` if `block` has all its internal transactions fetched
   """
   @type t :: %__MODULE__{
+          block_number: Explorer.Chain.Block.block_number() | nil,
+          type: Type.t(),
           call_type: CallType.t() | nil,
           created_contract_address: %Ecto.Association.NotLoaded{} | Address.t() | nil,
-          created_contract_address_hash: Explorer.Chain.Hash.t() | nil,
+          created_contract_address_hash: Hash.t() | nil,
           created_contract_code: Data.t() | nil,
           error: String.t(),
           from_address: %Ecto.Association.NotLoaded{} | Address.t(),
           from_address_hash: Hash.Address.t(),
-          gas: Gas.t(),
+          gas: Gas.t() | nil,
           gas_used: Gas.t() | nil,
           index: non_neg_integer(),
           init: Data.t() | nil,
-          input: Data.t(),
+          input: Data.t() | nil,
           output: Data.t() | nil,
           to_address: %Ecto.Association.NotLoaded{} | Address.t() | nil,
           to_address_hash: Hash.Address.t() | nil,
           trace_address: [non_neg_integer()],
           transaction: %Ecto.Association.NotLoaded{} | Transaction.t(),
-          transaction_hash: Explorer.Chain.Hash.t(),
-          type: Type.t(),
-          value: Wei.t()
+          transaction_hash: Hash.t(),
+          transaction_index: Transaction.transaction_index() | nil,
+          value: Wei.t(),
+          block_hash: Hash.Full.t(),
+          block_index: non_neg_integer()
         }
 
+  @primary_key false
   schema "internal_transactions" do
     field(:call_type, CallType)
     field(:created_contract_code, Data)
     field(:error, :string)
     field(:gas, :decimal)
     field(:gas_used, :decimal)
-    field(:index, :integer)
+    field(:index, :integer, primary_key: true)
     field(:init, Data)
     field(:input, Data)
     field(:output, Data)
     field(:trace_address, {:array, :integer})
     field(:type, Type)
     field(:value, Wei)
+    field(:block_number, :integer)
+    field(:transaction_index, :integer)
+    field(:block_index, :integer)
 
     timestamps()
 
@@ -89,7 +103,25 @@ defmodule Explorer.Chain.InternalTransaction do
       type: Hash.Address
     )
 
-    belongs_to(:transaction, Transaction, foreign_key: :transaction_hash, references: :hash, type: Hash.Full)
+    belongs_to(:transaction, Transaction,
+      foreign_key: :transaction_hash,
+      primary_key: true,
+      references: :hash,
+      type: Hash.Full
+    )
+
+    belongs_to(:block, Block,
+      foreign_key: :block_hash,
+      references: :hash,
+      type: Hash.Full
+    )
+
+    belongs_to(:pending_block, PendingBlockOperation,
+      foreign_key: :block_hash,
+      define_field: false,
+      references: :block_hash,
+      type: Hash.Full
+    )
   end
 
   @doc """
@@ -112,7 +144,10 @@ defmodule Explorer.Chain.InternalTransaction do
       ...>     trace_address: [],
       ...>     transaction_hash: "0x3a3eb134e6792ce9403ea4188e5e79693de9e4c94e499db132be086400da79e6",
       ...>     type: "create",
-      ...>     value: 0
+      ...>     value: 0,
+      ...>     block_number: 35,
+      ...>     block_hash: "0xf6b4b8c88df3ebd252ec476328334dc026cf66606a84fb769b3d3cbccc8471bd",
+      ...>     block_index: 0
       ...>   }
       ...> )
       iex> changeset.valid?
@@ -150,7 +185,11 @@ defmodule Explorer.Chain.InternalTransaction do
       ...>     trace_address: [],
       ...>     transaction_hash: "0x3c624bb4852fb5e35a8f45644cec7a486211f6ba89034768a2b763194f22f97d",
       ...>     type: "create",
-      ...>     value: 0
+      ...>     value: 0,
+      ...>     block_number: 35,
+      ...>     block_hash: "0xf6b4b8c88df3ebd252ec476328334dc026cf66606a84fb769b3d3cbccc8471bd",
+      ...>     block_index: 0,
+      ...>     transaction_index: 0
       ...>   }
       iex> )
       iex> changeset.valid?
@@ -161,22 +200,27 @@ defmodule Explorer.Chain.InternalTransaction do
         bytes: <<120, 164, 45, 55, 5, 251, 60, 38, 164, 181, 71, 55, 167, 132, 191, 6, 79, 8, 21, 251>>
       }
 
-  `:call` type traces are generated when a method in a contrat is call.
+  `:call` type traces are generated when a method in a contract is call.
 
       iex> changeset = Explorer.Chain.InternalTransaction.changeset(
       ...>   %Explorer.Chain.InternalTransaction{},
       ...>   %{
+      ...>     block_number: 35,
+      ...>     block_hash: "0xf6b4b8c88df3ebd252ec476328334dc026cf66606a84fb769b3d3cbccc8471bd",
+      ...>     block_index: 0,
+      ...>     transaction_index: 0,
+      ...>     transaction_hash: "0x3a3eb134e6792ce9403ea4188e5e79693de9e4c94e499db132be086400da79e6",
+      ...>     index: 0,
+      ...>     trace_address: [],
       ...>     call_type: "call",
+      ...>     type: "call",
       ...>     from_address_hash: "0xe8ddc5c7a2d2f0d7a9798459c0104fdf5e987aca",
+      ...>     to_address_hash: "0x8bf38d4764929064f2d4d3a56520a76ab3df415b",
       ...>     gas: 4677320,
       ...>     gas_used: 27770,
-      ...>     index: 0,
+      ...>     input: "0x",
       ...>     output: "0x",
-      ...>     to_address_hash: "0x8bf38d4764929064f2d4d3a56520a76ab3df415b",
-      ...>     trace_address: [],
-      ...>     transaction_hash: "0x3a3eb134e6792ce9403ea4188e5e79693de9e4c94e499db132be086400da79e6",
-      ...>     type: "call",
-      ...>     value: 0
+      ...>     value: 0,
       ...>   }
       ...> )
       iex> changeset.valid?
@@ -187,15 +231,20 @@ defmodule Explorer.Chain.InternalTransaction do
       iex> changeset = Explorer.Chain.InternalTransaction.changeset(
       ...>   %Explorer.Chain.InternalTransaction{},
       ...>   %{
-      ...>     call_type: "call",
-      ...>     error: "Reverted",
-      ...>     from_address_hash: "0xc9266e6fdf5182dc47d27e0dc32bdff9e4cd2e32",
-      ...>     gas: 7578728,
-      ...>     index: 0,
-      ...>     to_address_hash: "0xfdca0da4158740a93693441b35809b5bb463e527",
-      ...>     trace_address: [],
+      ...>     block_number: 35,
+      ...>     block_hash: "0xf6b4b8c88df3ebd252ec476328334dc026cf66606a84fb769b3d3cbccc8471bd",
+      ...>     block_index: 0,
+      ...>     transaction_index: 0,
       ...>     transaction_hash: "0xcd7c15dbbc797722bef6e1d551edfd644fc7f4fb2ccd6a7947b2d1ade9ed140b",
+      ...>     index: 0,
+      ...>     trace_address: [],
       ...>     type: "call",
+      ...>     call_type: "call",
+      ...>     from_address_hash: "0xc9266e6fdf5182dc47d27e0dc32bdff9e4cd2e32",
+      ...>     to_address_hash: "0xfdca0da4158740a93693441b35809b5bb463e527",
+      ...>     gas: 7578728,
+      ...>     input: "0x",
+      ...>     error: "Reverted",
       ...>     value: 10000000000000000
       ...>   }
       ...> )
@@ -203,22 +252,27 @@ defmodule Explorer.Chain.InternalTransaction do
       true
 
   Failed `:call`s are not allowed to set `gas_used` or `output` because they are part of the successful `result` object
-  in the Parity JSONRPC response.
+  in the Nethermind JSONRPC response.  They still need `input`, however.
 
       iex> changeset = Explorer.Chain.InternalTransaction.changeset(
       ...>   %Explorer.Chain.InternalTransaction{},
       ...>   %{
+      ...>     block_number: 35,
+      ...>     block_hash: "0xf6b4b8c88df3ebd252ec476328334dc026cf66606a84fb769b3d3cbccc8471bd",
+      ...>     block_index: 0,
+      ...>     transaction_index: 0,
+      ...>     transaction_hash: "0xcd7c15dbbc797722bef6e1d551edfd644fc7f4fb2ccd6a7947b2d1ade9ed140b",
+      ...>     index: 0,
+      ...>     trace_address: [],
+      ...>     type: "call",
       ...>     call_type: "call",
-      ...>     error: "Reverted",
       ...>     from_address_hash: "0xc9266e6fdf5182dc47d27e0dc32bdff9e4cd2e32",
+      ...>     to_address_hash: "0xfdca0da4158740a93693441b35809b5bb463e527",
       ...>     gas: 7578728,
       ...>     gas_used: 7578727,
-      ...>     index: 0,
+      ...>     input: "0x",
       ...>     output: "0x",
-      ...>     to_address_hash: "0xfdca0da4158740a93693441b35809b5bb463e527",
-      ...>     trace_address: [],
-      ...>     transaction_hash: "0xcd7c15dbbc797722bef6e1d551edfd644fc7f4fb2ccd6a7947b2d1ade9ed140b",
-      ...>     type: "call",
+      ...>     error: "Reverted",
       ...>     value: 10000000000000000
       ...>   }
       ...> )
@@ -226,23 +280,27 @@ defmodule Explorer.Chain.InternalTransaction do
       false
       iex> changeset.errors
       [
-        output: {"can't be present for failed call", []},
-        gas_used: {"can't be present for failed call", []}
+        output: {"can't be present for failed call", []}
       ]
 
-  Likewise, successful `:call`s require `gas_used` and `output` to be set.
+  Likewise, successful `:call`s require `input`, `gas_used` and `output` to be set.
 
       iex> changeset = Explorer.Chain.InternalTransaction.changeset(
       ...>   %Explorer.Chain.InternalTransaction{},
       ...>   %{
+      ...>     block_number: 35,
+      ...>     block_hash: "0xf6b4b8c88df3ebd252ec476328334dc026cf66606a84fb769b3d3cbccc8471bd",
+      ...>     block_index: 0,
+      ...>     transaction_index: 0,
+      ...>     transaction_hash: "0xcd7c15dbbc797722bef6e1d551edfd644fc7f4fb2ccd6a7947b2d1ade9ed140b",
+      ...>     index: 0,
+      ...>     trace_address: [],
+      ...>     type: "call",
       ...>     call_type: "call",
       ...>     from_address_hash: "0xc9266e6fdf5182dc47d27e0dc32bdff9e4cd2e32",
-      ...>     gas: 7578728,
-      ...>     index: 0,
       ...>     to_address_hash: "0xfdca0da4158740a93693441b35809b5bb463e527",
-      ...>     trace_address: [],
-      ...>     transaction_hash: "0xcd7c15dbbc797722bef6e1d551edfd644fc7f4fb2ccd6a7947b2d1ade9ed140b",
-      ...>     type: "call",
+      ...>     input: "0x",
+      ...>     gas: 7578728,
       ...>     value: 10000000000000000
       ...>   }
       ...> )
@@ -255,7 +313,7 @@ defmodule Explorer.Chain.InternalTransaction do
       ]
 
   For failed `:create`, `created_contract_code`, `created_contract_address_hash`, and `gas_used` are not allowed to be
-  set because they come from `result` object, which shouldn't be returned from Parity.
+  set because they come from `result` object, which shouldn't be returned from Nethermind.
 
       iex> changeset = Explorer.Chain.InternalTransaction.changeset(
       ...>   %Explorer.Chain.InternalTransaction{},
@@ -271,7 +329,11 @@ defmodule Explorer.Chain.InternalTransaction do
       ...>     trace_address: [],
       ...>     transaction_hash: "0x3c624bb4852fb5e35a8f45644cec7a486211f6ba89034768a2b763194f22f97d",
       ...>     type: "create",
-      ...>     value: 0
+      ...>     value: 0,
+      ...>     block_number: 35,
+      ...>     block_hash: "0xf6b4b8c88df3ebd252ec476328334dc026cf66606a84fb769b3d3cbccc8471bd",
+      ...>     block_index: 0,
+      ...>     transaction_index: 0
       ...>   }
       iex> )
       iex> changeset.valid?
@@ -295,7 +357,11 @@ defmodule Explorer.Chain.InternalTransaction do
       ...>     trace_address: [],
       ...>     transaction_hash: "0x3a3eb134e6792ce9403ea4188e5e79693de9e4c94e499db132be086400da79e6",
       ...>     type: "create",
-      ...>     value: 0
+      ...>     value: 0,
+      ...>     block_number: 35,
+      ...>     block_hash: "0xf6b4b8c88df3ebd252ec476328334dc026cf66606a84fb769b3d3cbccc8471bd",
+      ...>     block_index: 0,
+      ...>     transaction_index: 0
       ...>   }
       ...> )
       iex> changeset.valid?
@@ -307,7 +373,7 @@ defmodule Explorer.Chain.InternalTransaction do
         gas_used: {"can't be blank for successful create", [validation: :required]}
       ]
 
-  For `:suicide`s, it looks like a simple value transfer between the addresses.
+  For `:selfdestruct`s, it looks like a simple value transfer between the addresses.
 
       iex> changeset = Explorer.Chain.InternalTransaction.changeset(
       ...>   %Explorer.Chain.InternalTransaction{},
@@ -317,8 +383,12 @@ defmodule Explorer.Chain.InternalTransaction do
       ...>     to_address_hash: "0x59e2e9ecf133649b1a7efc731162ff09d29ca5a5",
       ...>     trace_address: [0],
       ...>     transaction_hash: "0xb012b8c53498c669d87d85ed90f57385848b86d3f44ed14b2784ec685d6fda98",
-      ...>     type: "suicide",
-      ...>     value: 0
+      ...>     type: "selfdestruct",
+      ...>     value: 0,
+      ...>     block_number: 35,
+      ...>     block_hash: "0xf6b4b8c88df3ebd252ec476328334dc026cf66606a84fb769b3d3cbccc8471bd",
+      ...>     block_index: 0,
+      ...>     transaction_index: 0
       ...>   }
       ...> )
       iex> changeset.valid?
@@ -329,7 +399,32 @@ defmodule Explorer.Chain.InternalTransaction do
     internal_transaction
     |> cast(attrs, ~w(type)a)
     |> validate_required(~w(type)a)
+    |> validate_block_required(attrs)
     |> type_changeset(attrs)
+  end
+
+  @doc """
+  Accepts changes without `:type` but with `:block_number`, if `:type` is defined
+  works like `changeset`, except allowing `:block_hash` and `:block_index` to be undefined.
+
+  This is used because the `internal_transactions` runner can derive such values
+  on its own or use empty types to know that a block has no internal transactions.
+  """
+  def blockless_changeset(%__MODULE__{} = internal_transaction, attrs \\ %{}) do
+    changeset = cast(internal_transaction, attrs, ~w(type block_number)a)
+
+    if validate_required(changeset, ~w(type)a).valid? do
+      type_changeset(changeset, attrs)
+    else
+      validate_required(changeset, ~w(block_number)a)
+    end
+  end
+
+  defp validate_block_required(changeset, attrs) do
+    changeset
+    |> cast(attrs, ~w(block_hash block_index)a)
+    |> validate_required(~w(block_hash block_index)a)
+    |> foreign_key_constraint(:block_hash)
   end
 
   defp type_changeset(changeset, attrs) do
@@ -338,8 +433,8 @@ defmodule Explorer.Chain.InternalTransaction do
     type_changeset(changeset, attrs, type)
   end
 
-  @call_optional_fields ~w(error gas_used output)
-  @call_required_fields ~w(call_type from_address_hash gas index to_address_hash trace_address transaction_hash value)a
+  @call_optional_fields ~w(error gas_used output block_number transaction_index)a
+  @call_required_fields ~w(call_type from_address_hash gas index input to_address_hash trace_address transaction_hash value)a
   @call_allowed_fields @call_optional_fields ++ @call_required_fields
 
   defp type_changeset(changeset, attrs, :call) do
@@ -347,34 +442,38 @@ defmodule Explorer.Chain.InternalTransaction do
     |> cast(attrs, @call_allowed_fields)
     |> validate_required(@call_required_fields)
     |> validate_call_error_or_result()
+    |> check_constraint(:call_type, message: ~S|can't be blank when type is 'call'|, name: :call_has_call_type)
+    |> check_constraint(:input, message: ~S|can't be blank when type is 'call'|, name: :call_has_call_type)
     |> foreign_key_constraint(:from_address_hash)
     |> foreign_key_constraint(:to_address_hash)
     |> foreign_key_constraint(:transaction_hash)
     |> unique_constraint(:index)
   end
 
-  @create_optional_fields ~w(error created_contract_code created_contract_address_hash gas_used)
+  @create_optional_fields ~w(error created_contract_code created_contract_address_hash gas_used block_number transaction_index)a
   @create_required_fields ~w(from_address_hash gas index init trace_address transaction_hash value)a
   @create_allowed_fields @create_optional_fields ++ @create_required_fields
 
-  defp type_changeset(changeset, attrs, :create) do
+  defp type_changeset(changeset, attrs, type) when type in [:create, :create2] do
     changeset
     |> cast(attrs, @create_allowed_fields)
     |> validate_required(@create_required_fields)
     |> validate_create_error_or_result()
+    |> check_constraint(:init, message: ~S|can't be blank when type is 'create'|, name: :create_has_init)
     |> foreign_key_constraint(:created_contract_address_hash)
     |> foreign_key_constraint(:from_address_hash)
     |> foreign_key_constraint(:transaction_hash)
     |> unique_constraint(:index)
   end
 
-  @suicide_required_fields ~w(from_address_hash index to_address_hash trace_address transaction_hash type value)a
-  @suicide_allowed_fields @suicide_required_fields
+  @selfdestruct_optional_fields ~w(block_number transaction_index)a
+  @selfdestruct_required_fields ~w(from_address_hash index to_address_hash trace_address transaction_hash type value)a
+  @selfdestruct_allowed_fields @selfdestruct_optional_fields ++ @selfdestruct_required_fields
 
-  defp type_changeset(changeset, attrs, :suicide) do
+  defp type_changeset(changeset, attrs, :selfdestruct) do
     changeset
-    |> cast(attrs, @suicide_allowed_fields)
-    |> validate_required(@suicide_required_fields)
+    |> cast(attrs, @selfdestruct_allowed_fields)
+    |> validate_required(@selfdestruct_required_fields)
     |> foreign_key_constraint(:from_address_hash)
     |> foreign_key_constraint(:to_address_hash)
     |> unique_constraint(:index)
@@ -395,13 +494,11 @@ defmodule Explorer.Chain.InternalTransaction do
     end)
   end
 
-  @call_success_fields ~w(gas_used output)a
-
   # Validates that :call `type` changeset either has an `error` or both `gas_used` and `output`
   defp validate_call_error_or_result(changeset) do
     case get_field(changeset, :error) do
-      nil -> validate_required(changeset, @call_success_fields, message: "can't be blank for successful call")
-      _ -> validate_disallowed(changeset, @call_success_fields, message: "can't be present for failed call")
+      nil -> validate_required(changeset, [:gas_used, :output], message: "can't be blank for successful call")
+      _ -> validate_disallowed(changeset, [:output], message: "can't be present for failed call")
     end
   end
 
@@ -433,7 +530,12 @@ defmodule Explorer.Chain.InternalTransaction do
     from_address_hash, created_contract_address_hash from internal_transactions' table.
   """
   def where_address_fields_match(query, address_hash, :to) do
-    where(query, [t], t.to_address_hash == ^address_hash)
+    where(
+      query,
+      [t],
+      t.to_address_hash == ^address_hash or
+        (is_nil(t.to_address_hash) and t.created_contract_address_hash == ^address_hash)
+    )
   end
 
   def where_address_fields_match(query, address_hash, :from) do
@@ -446,6 +548,189 @@ defmodule Explorer.Chain.InternalTransaction do
       [it],
       it.to_address_hash == ^address_hash or it.from_address_hash == ^address_hash or
         it.created_contract_address_hash == ^address_hash
+    )
+  end
+
+  def where_address_fields_match(query, address_hash, :to_address_hash) do
+    where(query, [it], it.to_address_hash == ^address_hash)
+  end
+
+  def where_address_fields_match(query, address_hash, :from_address_hash) do
+    where(query, [it], it.from_address_hash == ^address_hash)
+  end
+
+  def where_address_fields_match(query, address_hash, :created_contract_address_hash) do
+    where(query, [it], it.created_contract_address_hash == ^address_hash)
+  end
+
+  def where_is_different_from_parent_transaction(query) do
+    where(
+      query,
+      [it],
+      (it.type == ^:call and it.index > 0) or it.type != ^:call
+    )
+  end
+
+  def where_block_number_in_period(query, from_number, to_number) when is_nil(from_number) and not is_nil(to_number) do
+    where(
+      query,
+      [it],
+      it.block_number <= ^to_number
+    )
+  end
+
+  def where_block_number_in_period(query, from_number, to_number) when not is_nil(from_number) and is_nil(to_number) do
+    where(
+      query,
+      [it],
+      it.block_number > ^from_number
+    )
+  end
+
+  def where_block_number_in_period(query, from_number, to_number) when is_nil(from_number) and is_nil(to_number) do
+    where(
+      query,
+      [it],
+      1
+    )
+  end
+
+  def where_block_number_in_period(query, from_number, to_number) do
+    where(
+      query,
+      [it],
+      it.block_number > ^from_number and it.block_number <= ^to_number
+    )
+  end
+
+  def where_block_number_is_not_null(query) do
+    where(query, [t], not is_nil(t.block_number))
+  end
+
+  @doc """
+  Filters out internal_transactions of blocks that are flagged as needing fetching
+  of internal_transactions
+  """
+  def where_nonpending_block(query \\ nil) do
+    (query || __MODULE__)
+    |> join(:left, [it], pending in assoc(it, :pending_block), as: :pending)
+    |> where([it, pending: pending], is_nil(pending.block_hash))
+  end
+
+  def internal_transactions_to_raw(internal_transactions) when is_list(internal_transactions) do
+    internal_transactions
+    |> Enum.map(&internal_transaction_to_raw/1)
+    |> add_subtraces()
+  end
+
+  defp internal_transaction_to_raw(%{type: :call} = transaction) do
+    %{
+      call_type: call_type,
+      to_address_hash: to_address_hash,
+      from_address_hash: from_address_hash,
+      input: input,
+      gas: gas,
+      value: value,
+      trace_address: trace_address
+    } = transaction
+
+    action = %{
+      "callType" => call_type,
+      "to" => to_address_hash,
+      "from" => from_address_hash,
+      "input" => input,
+      "gas" => gas,
+      "value" => value
+    }
+
+    %{
+      "type" => "call",
+      "action" => Action.to_raw(action),
+      "traceAddress" => trace_address
+    }
+    |> put_raw_call_error_or_result(transaction)
+  end
+
+  defp internal_transaction_to_raw(%{type: type} = transaction) when type in [:create, :create2] do
+    %{
+      from_address_hash: from_address_hash,
+      gas: gas,
+      init: init,
+      trace_address: trace_address,
+      value: value
+    } = transaction
+
+    action = %{"from" => from_address_hash, "gas" => gas, "init" => init, "value" => value}
+
+    %{
+      "type" => Atom.to_string(type),
+      "action" => Action.to_raw(action),
+      "traceAddress" => trace_address
+    }
+    |> put_raw_create_error_or_result(transaction)
+  end
+
+  defp internal_transaction_to_raw(%{type: :selfdestruct} = transaction) do
+    %{
+      to_address_hash: to_address_hash,
+      from_address_hash: from_address_hash,
+      trace_address: trace_address,
+      value: value
+    } = transaction
+
+    action = %{
+      "address" => from_address_hash,
+      "balance" => value,
+      "refundAddress" => to_address_hash
+    }
+
+    %{
+      "type" => "suicide",
+      "action" => Action.to_raw(action),
+      "traceAddress" => trace_address
+    }
+  end
+
+  defp add_subtraces(traces) do
+    Enum.map(traces, fn trace ->
+      Map.put(trace, "subtraces", count_subtraces(trace, traces))
+    end)
+  end
+
+  defp count_subtraces(%{"traceAddress" => trace_address}, traces) do
+    Enum.count(traces, fn %{"traceAddress" => trace_address_candidate} ->
+      direct_descendant?(trace_address, trace_address_candidate)
+    end)
+  end
+
+  defp direct_descendant?([], [_]), do: true
+
+  defp direct_descendant?([elem | remaining_left], [elem | remaining_right]),
+    do: direct_descendant?(remaining_left, remaining_right)
+
+  defp direct_descendant?(_, _), do: false
+
+  defp put_raw_call_error_or_result(raw, %{error: error}) when not is_nil(error) do
+    Map.put(raw, "error", error)
+  end
+
+  defp put_raw_call_error_or_result(raw, %{gas_used: gas_used, output: output}) do
+    Map.put(raw, "result", Result.to_raw(%{"gasUsed" => gas_used, "output" => output}))
+  end
+
+  defp put_raw_create_error_or_result(raw, %{error: error}) when not is_nil(error) do
+    Map.put(raw, "error", error)
+  end
+
+  defp put_raw_create_error_or_result(raw, %{
+         created_contract_code: code,
+         created_contract_address_hash: created_contract_address_hash,
+         gas_used: gas_used
+       }) do
+    Map.put(
+      raw,
+      "result",
+      Result.to_raw(%{"gasUsed" => gas_used, "code" => code, "address" => created_contract_address_hash})
     )
   end
 end

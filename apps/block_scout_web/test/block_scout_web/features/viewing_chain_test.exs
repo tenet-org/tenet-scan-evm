@@ -1,11 +1,18 @@
 defmodule BlockScoutWeb.ViewingChainTest do
   @moduledoc false
 
-  use BlockScoutWeb.FeatureCase, async: true
+  use BlockScoutWeb.FeatureCase,
+    # MUST Be false because ETS tables for Counters are shared
+    async: false
 
   alias BlockScoutWeb.{AddressPage, BlockPage, ChainPage, TransactionPage}
+  alias Explorer.Chain.Block
+  alias Explorer.Counters.AddressesCounter
 
   setup do
+    Supervisor.terminate_child(Explorer.Supervisor, Explorer.Chain.Cache.Blocks.child_id())
+    Supervisor.restart_child(Explorer.Supervisor, Explorer.Chain.Cache.Blocks.child_id())
+
     Enum.map(401..404, &insert(:block, number: &1))
 
     block = insert(:block, number: 405)
@@ -28,6 +35,9 @@ defmodule BlockScoutWeb.ViewingChainTest do
     test "search for address", %{session: session} do
       address = insert(:address)
 
+      start_supervised!(AddressesCounter)
+      AddressesCounter.consolidate()
+
       session
       |> ChainPage.visit_page()
       |> ChainPage.search(to_string(address.hash))
@@ -39,6 +49,9 @@ defmodule BlockScoutWeb.ViewingChainTest do
     test "search for blocks from chain page", %{session: session} do
       block = insert(:block, number: 6)
 
+      start_supervised!(AddressesCounter)
+      AddressesCounter.consolidate()
+
       session
       |> ChainPage.visit_page()
       |> ChainPage.search(to_string(block.number))
@@ -46,15 +59,37 @@ defmodule BlockScoutWeb.ViewingChainTest do
     end
 
     test "blocks list", %{session: session} do
+      start_supervised!(AddressesCounter)
+      AddressesCounter.consolidate()
+
       session
       |> ChainPage.visit_page()
       |> assert_has(ChainPage.blocks(count: 4))
+    end
+
+    test "inserts place holder blocks on render for out of order blocks", %{session: session} do
+      insert(:block, number: 409)
+
+      start_supervised!(AddressesCounter)
+      AddressesCounter.consolidate()
+
+      session
+      |> ChainPage.visit_page()
+      |> assert_has(ChainPage.block(%Block{number: 408}))
+      |> assert_has(ChainPage.place_holder_blocks(3))
     end
   end
 
   describe "viewing transactions" do
     test "search for transactions", %{session: session} do
-      transaction = insert(:transaction)
+      block = insert(:block)
+
+      transaction =
+        insert(:transaction)
+        |> with_block(block)
+
+      start_supervised!(AddressesCounter)
+      AddressesCounter.consolidate()
 
       session
       |> ChainPage.visit_page()
@@ -63,6 +98,9 @@ defmodule BlockScoutWeb.ViewingChainTest do
     end
 
     test "transactions list", %{session: session} do
+      start_supervised!(AddressesCounter)
+      AddressesCounter.consolidate()
+
       session
       |> ChainPage.visit_page()
       |> assert_has(ChainPage.transactions(count: 5))
@@ -76,6 +114,9 @@ defmodule BlockScoutWeb.ViewingChainTest do
         |> insert(to_address: nil)
         |> with_contract_creation(contract_address)
         |> with_block(block)
+
+      start_supervised!(AddressesCounter)
+      AddressesCounter.consolidate()
 
       session
       |> ChainPage.visit_page()
@@ -92,17 +133,25 @@ defmodule BlockScoutWeb.ViewingChainTest do
       transaction =
         :transaction
         |> insert(to_address: contract_token_address)
-        |> with_block(block)
+        |> with_block(block, status: :ok)
 
       insert_list(
         3,
         :token_transfer,
         transaction: transaction,
-        token_contract_address: contract_token_address
+        token_contract_address: contract_token_address,
+        block: block
       )
 
+      start_supervised!(AddressesCounter)
+      AddressesCounter.consolidate()
+
+      ChainPage.visit_page(session)
+
+      # wait for the `transactions-list` to load
+      :timer.sleep(1000)
+
       session
-      |> ChainPage.visit_page()
       |> assert_has(ChainPage.token_transfers(transaction, count: 1))
       |> click(ChainPage.token_transfers_expansion(transaction))
       |> assert_has(ChainPage.token_transfers(transaction, count: 3))

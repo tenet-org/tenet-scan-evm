@@ -6,8 +6,6 @@ defmodule EthereumJSONRPC.Receipt do
 
   import EthereumJSONRPC, only: [quantity_to_integer: 1]
 
-  alias Explorer.Chain.Transaction.Status
-  alias EthereumJSONRPC
   alias EthereumJSONRPC.Logs
 
   @type elixir :: %{String.t() => String.t() | non_neg_integer}
@@ -40,6 +38,12 @@ defmodule EthereumJSONRPC.Receipt do
             | nil
         }
 
+  @typedoc """
+   * `:ok` - transaction succeeded
+   * `:error` - transaction failed
+  """
+  @type status :: :ok | :error
+
   @doc """
   Get `t:EthereumJSONRPC.Logs.elixir/0` from `t:elixir/0`
   """
@@ -65,6 +69,7 @@ defmodule EthereumJSONRPC.Receipt do
       ...>   }
       ...> )
       %{
+        created_contract_address_hash: "0xffc87239eb0267bc3ca2cd51d12fbf278e02ccb4",
         cumulative_gas_used: 269607,
         gas_used: 269607,
         status: :ok,
@@ -97,6 +102,7 @@ defmodule EthereumJSONRPC.Receipt do
       ...>   }
       ...> )
       %{
+        created_contract_address_hash: nil,
         cumulative_gas_used: 21001,
         gas_used: 21001,
         status: nil,
@@ -108,7 +114,8 @@ defmodule EthereumJSONRPC.Receipt do
   @spec elixir_to_params(elixir) :: %{
           cumulative_gas_used: non_neg_integer,
           gas_used: non_neg_integer,
-          status: Status.t(),
+          created_contract_address_hash: String.t() | nil,
+          status: status(),
           transaction_hash: String.t(),
           transaction_index: non_neg_integer()
         }
@@ -116,6 +123,7 @@ defmodule EthereumJSONRPC.Receipt do
         %{
           "cumulativeGasUsed" => cumulative_gas_used,
           "gasUsed" => gas_used,
+          "contractAddress" => created_contract_address_hash,
           "transactionHash" => transaction_hash,
           "transactionIndex" => transaction_index
         } = elixir
@@ -125,6 +133,7 @@ defmodule EthereumJSONRPC.Receipt do
     %{
       cumulative_gas_used: cumulative_gas_used,
       gas_used: gas_used,
+      created_contract_address_hash: created_contract_address_hash,
       status: status,
       transaction_hash: transaction_hash,
       transaction_index: transaction_index
@@ -244,12 +253,19 @@ defmodule EthereumJSONRPC.Receipt do
   # hash format
   # gas is passed in from the `t:EthereumJSONRPC.Transaction.params/0` to allow pre-Byzantium status to be derived
   defp entry_to_elixir({key, _} = entry)
-       when key in ~w(blockHash contractAddress from gas logsBloom root to transactionHash),
+       when key in ~w(blockHash contractAddress from gas logsBloom root to transactionHash revertReason type effectiveGasPrice),
        do: {:ok, entry}
 
   defp entry_to_elixir({key, quantity})
        when key in ~w(blockNumber cumulativeGasUsed gasUsed transactionIndex) do
-    {:ok, {key, quantity_to_integer(quantity)}}
+    result =
+      if is_nil(quantity) do
+        nil
+      else
+        quantity_to_integer(quantity)
+      end
+
+    {:ok, {key, result}}
   end
 
   defp entry_to_elixir({"logs" = key, logs}) do
@@ -258,19 +274,44 @@ defmodule EthereumJSONRPC.Receipt do
 
   defp entry_to_elixir({"status" = key, status}) do
     case status do
-      "0x0" ->
+      zero when zero in ["0x0", "0x00"] ->
         {:ok, {key, :error}}
 
-      "0x1" ->
+      one when one in ["0x1", "0x01"] ->
         {:ok, {key, :ok}}
 
-      # pre-Byzantium / Ethereum Classic on Parity
+      # pre-Byzantium
       nil ->
         :ignore
 
       other ->
         {:error, {:unknown_value, %{key: key, value: other}}}
     end
+  end
+
+  # fixes for latest ganache JSON RPC
+  defp entry_to_elixir({key, _}) when key in ~w(r s v) do
+    :ignore
+  end
+
+  # Nethermind field
+  defp entry_to_elixir({"error", _}) do
+    :ignore
+  end
+
+  # Arbitrum fields
+  defp entry_to_elixir({key, _}) when key in ~w(returnData returnCode feeStats l1BlockNumber) do
+    :ignore
+  end
+
+  # Metis fields
+  defp entry_to_elixir({key, _}) when key in ~w(l1GasUsed l1GasPrice l1FeeScalar l1Fee) do
+    :ignore
+  end
+
+  # GoQuorum specific transaction receipt fields
+  defp entry_to_elixir({key, _}) when key in ~w(isPrivacyMarkerTransaction) do
+    :ignore
   end
 
   defp entry_to_elixir({key, value}) do

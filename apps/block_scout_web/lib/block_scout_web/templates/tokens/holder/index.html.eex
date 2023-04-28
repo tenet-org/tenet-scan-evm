@@ -3,40 +3,42 @@
     OverviewView,
     "_details.html",
     token: @token,
-    total_token_transfers: @total_token_transfers,
+    counters_path: @counters_path,
+    tags: @tags,
     conn: @conn
   ) %>
 
-  <section>
+  <section data-page="token-holders-list" id="holders">
     <div class="card">
-      <div class="card-header">
-        <%= render OverviewView, "_tabs.html", assigns %>
-      </div>
-
+      <%= render OverviewView, "_tabs.html", assigns %>
       <!-- Token Holders -->
-      <div class="card-body">
-        <h2 class="card-title"><%= gettext "Token Holders" %></h2>
+      <div class="card-body" data-async-listing="<%= @current_path %>" data-no-self-calls>
+        <%= render BlockScoutWeb.CommonComponentsView, "_channel_disconnected_message.html", text: gettext("Connection Lost") %>
+        <h2 class="card-title list-title-description"><%= gettext "Token Holders" %></h2>
 
-        <%= if Enum.any?(@token_balances) do %>
-          <%= for token_balance <- @token_balances do %>
-            <%= render "_token_balances.html", token: @token, token_balance: token_balance %>
-          <% end %>
-        <% else %>
+        <div class="list-top-pagination-container-wrapper">
+          <%= render BlockScoutWeb.CommonComponentsView, "_pagination_container.html", position: "top", cur_page_number: "1", show_pagination_limit: true, data_next_page_button: true, data_prev_page_button: true %>
+        </div>
+
+        <button data-error-message class="alert alert-danger col-12 text-left" style="display: none;">
+          <span href="#" class="alert-link"><%= gettext("Something went wrong, click to reload.") %></span>
+        </button>
+        <div data-empty-response-message style="display: none;">
           <div class="tile tile-muted text-center">
             <span data-selector="empty-transactions-list">
               <%= gettext "There are no holders for this Token." %>
             </span>
           </div>
-        <% end %>
+        </div>
 
-        <%= if @next_page_params do %>
-          <%= link(
-            gettext("Next Page"),
-            class: "button button-secondary button-small float-right mt-4",
-            to: token_holder_path(@conn, :index, @token.contract_address_hash, @next_page_params)
-          ) %>
-        <% end %>
+        <div data-items>
+          <%= render BlockScoutWeb.CommonComponentsView, "_tile-loader.html" %>
+        </div>
+
+        <%= render BlockScoutWeb.CommonComponentsView, "_pagination_container.html", position: "bottom", cur_page_number: "1", show_pagination_limit: true, data_next_page_button: true, data_prev_page_button: true %>
+
       </div>
     </div>
   </section>
+  <script defer data-cfasync="false" src="<%= static_path(@conn, "/js/token-counters.js") %>"></script>
 </section>

@@ -9,6 +9,14 @@ defmodule BlockScoutWeb.API.RPC.RPCView do
     }
   end
 
+  def render("show_value.json", %{data: data}) do
+    {value, _} =
+      data
+      |> Float.parse()
+
+    value
+  end
+
   def render("error.json", %{error: message} = assigns) do
     %{
       "status" => "0",

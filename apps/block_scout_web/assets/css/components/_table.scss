@@ -1,6 +1,7 @@
 .table-font {
-
-  thead th, td, th {
+  thead th,
+  td,
+  th {
     border-top: none;
     border-bottom: none;
   }
@@ -22,4 +23,8 @@
 
 .address-cell {
   width: 150px;
+}
+
+.token-icon {
+  padding-right: 5px;
 }
